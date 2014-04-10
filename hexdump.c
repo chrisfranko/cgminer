@@ -18,7 +18,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
+#include "miner.h"
 #define hex_print(p) applog(LOG_DEBUG, "%s", p)
 
 static char nibble[] = {
@@ -27,7 +27,7 @@ static char nibble[] = {
 
 #define BYTES_PER_LINE 0x10
 
-static void hexdump(const uint8_t *p, unsigned int len)
+void hexdump(const uint8_t *p, unsigned int len)
 {
 	unsigned int i, addr;
 	unsigned int wordlen = sizeof(void*);

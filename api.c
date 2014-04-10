@@ -6,6 +6,10 @@
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 3 of the License, or (at your option)
  * any later version.  See COPYING for more details.
+ *
+ * Note: the code always includes GPU support even if there are no GPUs
+ *	this simplifies handling multiple other device code being included
+ *	depending on compile options
  */
 #define _MEMORY_DEBUG_MASTER 1
 
@@ -24,25 +28,11 @@
 #include "compat.h"
 #include "miner.h"
 #include "util.h"
-#include "klist.h"
-
-#if defined(USE_BFLSC) || defined(USE_AVALON) || defined(USE_AVALON2) || \
-	defined(USE_HASHFAST) || defined(USE_BITFURY) || defined(USE_KLONDIKE) || \
-	defined(USE_KNC) || defined(USE_BAB) || defined(USE_DRILLBIT) || \
-	defined(USE_MINION) || defined(USE_COINTERRA) || defined(USE_BITMINE_A1) || \
-	defined(USE_ANT_S1) || defined(USE_SPONDOOLIES)
-#define HAVE_AN_ASIC 1
-#endif
-
-#if defined(USE_BITFORCE) || defined(USE_ICARUS) || defined(USE_MODMINER)
-#define HAVE_AN_FPGA 1
-#endif
 
 // BUFSIZ varies on Windows and Linux
 #define TMPBUFSIZ	8192
 
 // Number of requests to queue - normally would be small
-// However lots of PGA's may mean more
 #define QUEUE	100
 
 #if defined WIN32
@@ -128,11 +118,13 @@ static const char *COMMA = ",";
 #define COMSTR ","
 static const char SEPARATOR = '|';
 #define SEPSTR "|"
+static const char GPUSEP = ',';
+
 #define CMDJOIN '+'
 #define JOIN_CMD "CMD="
 #define BETWEEN_JOIN SEPSTR
 
-static const char *APIVERSION = "3.3";
+static const char *APIVERSION = "3.1";
 static const char *DEAD = "Dead";
 static const char *SICK = "Sick";
 static const char *NOSTART = "NoStart";
@@ -141,6 +133,8 @@ static const char *DISABLED = "Disabled";
 static const char *ALIVE = "Alive";
 static const char *REJECTING = "Rejecting";
 static const char *UNKNOWN = "Unknown";
+#define _DYNAMIC "D"
+static const char *DYNAMIC = _DYNAMIC;
 
 static __maybe_unused const char *NONE = "None";
 
@@ -151,74 +145,21 @@ static const char *NULLSTR = "(null)";
 static const char *TRUESTR = "true";
 static const char *FALSESTR = "false";
 
-static const char *SHA256STR = "sha256";
-
-static const char *DEVICECODE = ""
-#ifdef USE_ANT_S1
-			"ANT "
-#endif
-#ifdef USE_AVALON
-			"AVA "
-#endif
-#ifdef USE_BAB
-			"BaB "
-#endif
-#ifdef USE_BFLSC
-			"BAS "
-#endif
-#ifdef USE_BITFORCE
-			"BFL "
-#endif
-#ifdef USE_BITFURY
-			"BFU "
-#endif
-#ifdef USE_DRILLBIT
-			"DRB "
-#endif
-#ifdef USE_HASHFAST
-			"HFA "
-#endif
-#ifdef USE_BITMINE_A1
-			"BA1 "
-#endif
-#ifdef USE_ICARUS
-			"ICA "
-#endif
-#ifdef USE_KNC
-			"KnC "
-#endif
-#ifdef USE_MINION
-			"MBA "
-#endif
-#ifdef USE_MODMINER
-			"MMQ "
-#endif
-#ifdef USE_COINTERRA
-			"CTA "
-#endif
-#ifdef USE_SPONDOOLIES
-			"SPN "
-#endif
-
-			"";
+static const char *DEVICECODE = "GPU ";
 
 static const char *OSINFO =
-#if defined(__linux)
+#if defined(__linux__)
 			"Linux";
-#else
-#if defined(__APPLE__)
+#elif defined(__APPLE__)
 			"Apple";
-#else
-#if defined (WIN32)
+#elif defined(WIN32)
 			"Windows";
-#else
-#if defined(unix)
+#elif defined(__CYGWIN__)
+			"Cygwin";
+#elif defined(__unix__)
 			"Unix";
 #else
 			"Unknown";
-#endif
-#endif
-#endif
 #endif
 
 #define _DEVS		"DEVS"
@@ -227,17 +168,9 @@ static const char *OSINFO =
 #define _STATUS		"STATUS"
 #define _VERSION	"VERSION"
 #define _MINECONFIG	"CONFIG"
+#define _GPU		"GPU"
 
-#ifdef HAVE_AN_FPGA
-#define _PGA		"PGA"
-#endif
-
-#ifdef HAVE_AN_ASIC
-#define _ASC		"ASC"
-#endif
-
-#define _PGAS		"PGAS"
-#define _ASCS		"ASCS"
+#define _GPUS		"GPUS"
 #define _NOTIFY		"NOTIFY"
 #define _DEVDETAILS	"DEVDETAILS"
 #define _BYE		"BYE"
@@ -247,7 +180,6 @@ static const char *OSINFO =
 #define _MINECOIN	"COIN"
 #define _DEBUGSET	"DEBUG"
 #define _SETCONFIG	"SETCONFIG"
-#define _USBSTATS	"USBSTATS"
 
 static const char ISJSON = '{';
 #define JSON0		"{"
@@ -266,17 +198,9 @@ static const char ISJSON = '{';
 #define JSON_STATUS	JSON1 _STATUS JSON2
 #define JSON_VERSION	JSON1 _VERSION JSON2
 #define JSON_MINECONFIG	JSON1 _MINECONFIG JSON2
+#define JSON_GPU	JSON1 _GPU JSON2
 
-#ifdef HAVE_AN_FPGA
-#define JSON_PGA	JSON1 _PGA JSON2
-#endif
-
-#ifdef HAVE_AN_ASIC
-#define JSON_ASC	JSON1 _ASC JSON2
-#endif
-
-#define JSON_PGAS	JSON1 _PGAS JSON2
-#define JSON_ASCS	JSON1 _ASCS JSON2
+#define JSON_GPUS	JSON1 _GPUS JSON2
 #define JSON_NOTIFY	JSON1 _NOTIFY JSON2
 #define JSON_DEVDETAILS	JSON1 _DEVDETAILS JSON2
 #define JSON_BYE	JSON1 _BYE JSON1
@@ -287,7 +211,7 @@ static const char ISJSON = '{';
 #define JSON_MINECOIN	JSON1 _MINECOIN JSON2
 #define JSON_DEBUGSET	JSON1 _DEBUGSET JSON2
 #define JSON_SETCONFIG	JSON1 _SETCONFIG JSON2
-#define JSON_USBSTATS	JSON1 _USBSTATS JSON2
+
 #define JSON_END	JSON4 JSON5
 #define JSON_END_TRUNCATED	JSON4_TRUNCATED JSON5
 #define JSON_BETWEEN_JOIN	","
@@ -295,13 +219,24 @@ static const char ISJSON = '{';
 static const char *JSON_COMMAND = "command";
 static const char *JSON_PARAMETER = "parameter";
 
+#define MSG_INVGPU 1
+#define MSG_ALRENA 2
+#define MSG_ALRDIS 3
+#define MSG_GPUMRE 4
+#define MSG_GPUREN 5
+#define MSG_GPUNON 6
 #define MSG_POOL 7
 #define MSG_NOPOOL 8
 #define MSG_DEVS 9
 #define MSG_NODEVS 10
 #define MSG_SUMM 11
+#define MSG_GPUDIS 12
+#define MSG_GPUREI 13
 #define MSG_INVCMD 14
 #define MSG_MISID 15
+#define MSG_GPUDEV 17
+
+#define MSG_NUMGPU 20
 
 #define MSG_VERSION 22
 #define MSG_INVJSON 23
@@ -311,8 +246,18 @@ static const char *JSON_PARAMETER = "parameter";
 #define MSG_SWITCHP 27
 #define MSG_MISVAL 28
 #define MSG_NOADL 29
+#define MSG_NOGPUADL 30
 #define MSG_INVINT 31
+#define MSG_GPUINT 32
 #define MSG_MINECONFIG 33
+#define MSG_GPUMERR 34
+#define MSG_GPUMEM 35
+#define MSG_GPUEERR 36
+#define MSG_GPUENG 37
+#define MSG_GPUVERR 38
+#define MSG_GPUVDDC 39
+#define MSG_GPUFERR 40
+#define MSG_GPUFAN 41
 #define MSG_MISFN 42
 #define MSG_BADFN 43
 #define MSG_SAVED 44
@@ -322,28 +267,12 @@ static const char *JSON_PARAMETER = "parameter";
 #define MSG_DISPOOL 48
 #define MSG_ALRENAP 49
 #define MSG_ALRDISP 50
-#define MSG_DISLASTP 51
 #define MSG_MISPDP 52
 #define MSG_INVPDP 53
 #define MSG_TOOMANYP 54
 #define MSG_ADDPOOL 55
 
-#ifdef HAVE_AN_FPGA
-#define MSG_PGANON 56
-#define MSG_PGADEV 57
-#define MSG_INVPGA 58
-#endif
-
-#define MSG_NUMPGA 59
 #define MSG_NOTIFY 60
-
-#ifdef HAVE_AN_FPGA
-#define MSG_PGALRENA 61
-#define MSG_PGALRDIS 62
-#define MSG_PGAENA 63
-#define MSG_PGADIS 64
-#define MSG_PGAUNW 65
-#endif
 
 #define MSG_REMLASTP 66
 #define MSG_ACTPOOL 67
@@ -359,57 +288,18 @@ static const char *JSON_PARAMETER = "parameter";
 #define MSG_FOO 77
 #define MSG_MINECOIN 78
 #define MSG_DEBUGSET 79
-#define MSG_PGAIDENT 80
-#define MSG_PGANOID 81
 #define MSG_SETCONFIG 82
 #define MSG_UNKCON 83
 #define MSG_INVNUM 84
 #define MSG_CONPAR 85
 #define MSG_CONVAL 86
-#define MSG_USBSTA 87
-#define MSG_NOUSTA 88
 
-#ifdef HAVE_AN_FPGA
-#define MSG_MISPGAOPT 89
-#define MSG_PGANOSET 90
-#define MSG_PGAHELP 91
-#define MSG_PGASETOK 92
-#define MSG_PGASETERR 93
-#endif
+#define MSG_NOUSTA 88
 
 #define MSG_ZERMIS 94
 #define MSG_ZERINV 95
 #define MSG_ZERSUM 96
 #define MSG_ZERNOSUM 97
-#define MSG_PGAUSBNODEV 98
-#define MSG_INVHPLG 99
-#define MSG_HOTPLUG 100
-#define MSG_DISHPLG 101
-#define MSG_NOHPLG 102
-#define MSG_MISHPLG 103
-
-#define MSG_NUMASC 104
-#ifdef HAVE_AN_ASIC
-#define MSG_ASCNON 105
-#define MSG_ASCDEV 106
-#define MSG_INVASC 107
-#define MSG_ASCLRENA 108
-#define MSG_ASCLRDIS 109
-#define MSG_ASCENA 110
-#define MSG_ASCDIS 111
-#define MSG_ASCUNW 112
-#define MSG_ASCIDENT 113
-#define MSG_ASCNOID 114
-#endif
-#define MSG_ASCUSBNODEV 115
-
-#ifdef HAVE_AN_ASIC
-#define MSG_MISASCOPT 116
-#define MSG_ASCNOSET 117
-#define MSG_ASCHELP 118
-#define MSG_ASCSETOK 119
-#define MSG_ASCSETERR 120
-#endif
 
 #define MSG_INVNEG 121
 #define MSG_SETQUOTA 122
@@ -425,11 +315,9 @@ enum code_severity {
 };
 
 enum code_parameters {
-	PARAM_PGA,
-	PARAM_ASC,
+	PARAM_GPU,
 	PARAM_PID,
-	PARAM_PGAMAX,
-	PARAM_ASCMAX,
+	PARAM_GPUMAX,
 	PARAM_PMAX,
 	PARAM_POOLMAX,
 
@@ -452,55 +340,46 @@ struct CODES {
 	const enum code_parameters params;
 	const char *description;
 } codes[] = {
+ { SEVERITY_ERR,   MSG_INVGPU,	PARAM_GPUMAX,	"Invalid GPU id %d - range is 0 - %d" },
+ { SEVERITY_INFO,  MSG_ALRENA,	PARAM_GPU,	"GPU %d already enabled" },
+ { SEVERITY_INFO,  MSG_ALRDIS,	PARAM_GPU,	"GPU %d already disabled" },
+ { SEVERITY_WARN,  MSG_GPUMRE,	PARAM_GPU,	"GPU %d must be restarted first" },
+ { SEVERITY_INFO,  MSG_GPUREN,	PARAM_GPU,	"GPU %d sent enable message" },
+ { SEVERITY_ERR,   MSG_GPUNON,	PARAM_NONE,	"No GPUs" },
  { SEVERITY_SUCC,  MSG_POOL,	PARAM_PMAX,	"%d Pool(s)" },
  { SEVERITY_ERR,   MSG_NOPOOL,	PARAM_NONE,	"No pools" },
 
- { SEVERITY_SUCC,  MSG_DEVS,	PARAM_DMAX,
-#ifdef HAVE_AN_ASIC
-						"%d ASC(s)"
-#endif
-#if defined(HAVE_AN_ASIC) && defined(HAVE_AN_FPGA)
-						" - "
-#endif
-#ifdef HAVE_AN_FPGA
-						"%d PGA(s)"
-#endif
- },
-
- { SEVERITY_ERR,   MSG_NODEVS,	PARAM_NONE,	"No "
-#ifdef HAVE_AN_ASIC
-						"ASCs"
-#endif
-#if defined(HAVE_AN_ASIC) && defined(HAVE_AN_FPGA)
-						"/"
-#endif
-#ifdef HAVE_AN_FPGA
-						"PGAs"
-#endif
+ { SEVERITY_SUCC,  MSG_DEVS,	PARAM_DMAX, 	"%d GPU(s)" },
+ { SEVERITY_ERR,   MSG_NODEVS,	PARAM_NONE,	"No GPUs"
  },
 
  { SEVERITY_SUCC,  MSG_SUMM,	PARAM_NONE,	"Summary" },
+ { SEVERITY_INFO,  MSG_GPUDIS,	PARAM_GPU,	"GPU %d set disable flag" },
+ { SEVERITY_INFO,  MSG_GPUREI,	PARAM_GPU,	"GPU %d restart attempted" },
  { SEVERITY_ERR,   MSG_INVCMD,	PARAM_NONE,	"Invalid command" },
  { SEVERITY_ERR,   MSG_MISID,	PARAM_NONE,	"Missing device id parameter" },
-#ifdef HAVE_AN_FPGA
- { SEVERITY_ERR,   MSG_PGANON,	PARAM_NONE,	"No PGAs" },
- { SEVERITY_SUCC,  MSG_PGADEV,	PARAM_PGA,	"PGA%d" },
- { SEVERITY_ERR,   MSG_INVPGA,	PARAM_PGAMAX,	"Invalid PGA id %d - range is 0 - %d" },
- { SEVERITY_INFO,  MSG_PGALRENA,PARAM_PGA,	"PGA %d already enabled" },
- { SEVERITY_INFO,  MSG_PGALRDIS,PARAM_PGA,	"PGA %d already disabled" },
- { SEVERITY_INFO,  MSG_PGAENA,	PARAM_PGA,	"PGA %d sent enable message" },
- { SEVERITY_INFO,  MSG_PGADIS,	PARAM_PGA,	"PGA %d set disable flag" },
- { SEVERITY_ERR,   MSG_PGAUNW,	PARAM_PGA,	"PGA %d is not flagged WELL, cannot enable" },
-#endif
- { SEVERITY_SUCC,  MSG_NUMPGA,	PARAM_NONE,	"PGA count" },
- { SEVERITY_SUCC,  MSG_NUMASC,	PARAM_NONE,	"ASC count" },
- { SEVERITY_SUCC,  MSG_VERSION,	PARAM_NONE,	"CGMiner versions" },
+ { SEVERITY_SUCC,  MSG_GPUDEV,	PARAM_GPU,	"GPU%d" },
+ { SEVERITY_SUCC,  MSG_NUMGPU,	PARAM_NONE,	"GPU count" },
+ { SEVERITY_SUCC,  MSG_VERSION,	PARAM_NONE,	"OGMiner versions" },
  { SEVERITY_ERR,   MSG_INVJSON,	PARAM_NONE,	"Invalid JSON" },
  { SEVERITY_ERR,   MSG_MISCMD,	PARAM_CMD,	"Missing JSON '%s'" },
  { SEVERITY_ERR,   MSG_MISPID,	PARAM_NONE,	"Missing pool id parameter" },
  { SEVERITY_ERR,   MSG_INVPID,	PARAM_POOLMAX,	"Invalid pool id %d - range is 0 - %d" },
  { SEVERITY_SUCC,  MSG_SWITCHP,	PARAM_POOL,	"Switching to pool %d:'%s'" },
- { SEVERITY_SUCC,  MSG_MINECONFIG,PARAM_NONE,	"CGMiner config" },
+ { SEVERITY_ERR,   MSG_MISVAL,	PARAM_NONE,	"Missing comma after GPU number" },
+ { SEVERITY_ERR,   MSG_NOADL,	PARAM_NONE,	"ADL is not available" },
+ { SEVERITY_ERR,   MSG_NOGPUADL,PARAM_GPU,	"GPU %d does not have ADL" },
+ { SEVERITY_ERR,   MSG_INVINT,	PARAM_STR,	"Invalid intensity (%s) - must be '" _DYNAMIC  "' or range " MIN_INTENSITY_STR " - " MAX_INTENSITY_STR },
+ { SEVERITY_INFO,  MSG_GPUINT,	PARAM_BOTH,	"GPU %d set new intensity to %s" },
+ { SEVERITY_SUCC,  MSG_MINECONFIG,PARAM_NONE,	"ogminer config" },
+ { SEVERITY_ERR,   MSG_GPUMERR,	PARAM_BOTH,	"Setting GPU %d memoryclock to (%s) reported failure" },
+ { SEVERITY_SUCC,  MSG_GPUMEM,	PARAM_BOTH,	"Setting GPU %d memoryclock to (%s) reported success" },
+ { SEVERITY_ERR,   MSG_GPUEERR,	PARAM_BOTH,	"Setting GPU %d clock to (%s) reported failure" },
+ { SEVERITY_SUCC,  MSG_GPUENG,	PARAM_BOTH,	"Setting GPU %d clock to (%s) reported success" },
+ { SEVERITY_ERR,   MSG_GPUVERR,	PARAM_BOTH,	"Setting GPU %d vddc to (%s) reported failure" },
+ { SEVERITY_SUCC,  MSG_GPUVDDC,	PARAM_BOTH,	"Setting GPU %d vddc to (%s) reported success" },
+ { SEVERITY_ERR,   MSG_GPUFERR,	PARAM_BOTH,	"Setting GPU %d fan to (%s) reported failure" },
+ { SEVERITY_SUCC,  MSG_GPUFAN,	PARAM_BOTH,	"Setting GPU %d fan to (%s) reported success" },
  { SEVERITY_ERR,   MSG_MISFN,	PARAM_NONE,	"Missing save filename parameter" },
  { SEVERITY_ERR,   MSG_BADFN,	PARAM_STR,	"Can't open or create save file '%s'" },
  { SEVERITY_SUCC,  MSG_SAVED,	PARAM_STR,	"Configuration saved to file '%s'" },
@@ -512,7 +391,6 @@ struct CODES {
  { SEVERITY_SUCC,  MSG_DISPOOL,	PARAM_POOL,	"Disabling pool %d:'%s'" },
  { SEVERITY_INFO,  MSG_ALRENAP,	PARAM_POOL,	"Pool %d:'%s' already enabled" },
  { SEVERITY_INFO,  MSG_ALRDISP,	PARAM_POOL,	"Pool %d:'%s' already disabled" },
- { SEVERITY_ERR,   MSG_DISLASTP,PARAM_POOL,	"Cannot disable last active pool %d:'%s'" },
  { SEVERITY_ERR,   MSG_MISPDP,	PARAM_NONE,	"Missing addpool details" },
  { SEVERITY_ERR,   MSG_INVPDP,	PARAM_STR,	"Invalid addpool details '%s'" },
  { SEVERITY_ERR,   MSG_TOOMANYP,PARAM_NONE,	"Reached maximum number of pools (%d)" },
@@ -522,18 +400,14 @@ struct CODES {
  { SEVERITY_SUCC,  MSG_REMPOOL, PARAM_BOTH,	"Removed pool %d:'%s'" },
  { SEVERITY_SUCC,  MSG_NOTIFY,	PARAM_NONE,	"Notify" },
  { SEVERITY_SUCC,  MSG_DEVDETAILS,PARAM_NONE,	"Device Details" },
- { SEVERITY_SUCC,  MSG_MINESTATS,PARAM_NONE,	"CGMiner stats" },
+ { SEVERITY_SUCC,  MSG_MINESTATS,PARAM_NONE,	"ogminer stats" },
  { SEVERITY_ERR,   MSG_MISCHK,	PARAM_NONE,	"Missing check cmd" },
  { SEVERITY_SUCC,  MSG_CHECK,	PARAM_NONE,	"Check command" },
  { SEVERITY_ERR,   MSG_MISBOOL,	PARAM_NONE,	"Missing parameter: true/false" },
  { SEVERITY_ERR,   MSG_INVBOOL,	PARAM_NONE,	"Invalid parameter should be true or false" },
  { SEVERITY_SUCC,  MSG_FOO,	PARAM_BOOL,	"Failover-Only set to %s" },
- { SEVERITY_SUCC,  MSG_MINECOIN,PARAM_NONE,	"CGMiner coin" },
+ { SEVERITY_SUCC,  MSG_MINECOIN,PARAM_NONE,	"ogminer coin" },
  { SEVERITY_SUCC,  MSG_DEBUGSET,PARAM_NONE,	"Debug settings" },
-#ifdef HAVE_AN_FPGA
- { SEVERITY_SUCC,  MSG_PGAIDENT,PARAM_PGA,	"Identify command sent to PGA%d" },
- { SEVERITY_WARN,  MSG_PGANOID,	PARAM_PGA,	"PGA%d does not support identify" },
-#endif
  { SEVERITY_SUCC,  MSG_SETCONFIG,PARAM_SET,	"Set config '%s' to %d" },
  { SEVERITY_ERR,   MSG_UNKCON,	PARAM_STR,	"Unknown config '%s'" },
  { SEVERITY_ERR,   MSG_INVNUM,	PARAM_BOTH,	"Invalid number (%d) for '%s' range is 0-9999" },
@@ -541,48 +415,14 @@ struct CODES {
  { SEVERITY_SUCC,  MSG_SETQUOTA,PARAM_SET,	"Set pool '%s' to quota %d'" },
  { SEVERITY_ERR,   MSG_CONPAR,	PARAM_NONE,	"Missing config parameters 'name,N'" },
  { SEVERITY_ERR,   MSG_CONVAL,	PARAM_STR,	"Missing config value N for '%s,N'" },
- { SEVERITY_SUCC,  MSG_USBSTA,	PARAM_NONE,	"USB Statistics" },
  { SEVERITY_INFO,  MSG_NOUSTA,	PARAM_NONE,	"No USB Statistics" },
-#ifdef HAVE_AN_FPGA
- { SEVERITY_ERR,   MSG_MISPGAOPT, PARAM_NONE,	"Missing option after PGA number" },
- { SEVERITY_WARN,  MSG_PGANOSET, PARAM_PGA,	"PGA %d does not support pgaset" },
- { SEVERITY_INFO,  MSG_PGAHELP, PARAM_BOTH,	"PGA %d set help: %s" },
- { SEVERITY_SUCC,  MSG_PGASETOK, PARAM_BOTH,	"PGA %d set OK" },
- { SEVERITY_ERR,   MSG_PGASETERR, PARAM_BOTH,	"PGA %d set failed: %s" },
-#endif
  { SEVERITY_ERR,   MSG_ZERMIS,	PARAM_NONE,	"Missing zero parameters" },
  { SEVERITY_ERR,   MSG_ZERINV,	PARAM_STR,	"Invalid zero parameter '%s'" },
  { SEVERITY_SUCC,  MSG_ZERSUM,	PARAM_STR,	"Zeroed %s stats with summary" },
  { SEVERITY_SUCC,  MSG_ZERNOSUM, PARAM_STR,	"Zeroed %s stats without summary" },
-#ifdef USE_USBUTILS
- { SEVERITY_ERR,   MSG_PGAUSBNODEV, PARAM_PGA,	"PGA%d has no device" },
- { SEVERITY_ERR,   MSG_ASCUSBNODEV, PARAM_PGA,	"ASC%d has no device" },
-#endif
- { SEVERITY_ERR,   MSG_INVHPLG,	PARAM_STR,	"Invalid value for hotplug (%s) must be 0..9999" },
- { SEVERITY_SUCC,  MSG_HOTPLUG,	PARAM_INT,	"Hotplug check set to %ds" },
- { SEVERITY_SUCC,  MSG_DISHPLG,	PARAM_NONE,	"Hotplug disabled" },
- { SEVERITY_WARN,  MSG_NOHPLG,	PARAM_NONE,	"Hotplug is not available" },
- { SEVERITY_ERR,   MSG_MISHPLG,	PARAM_NONE,	"Missing hotplug parameter" },
-#ifdef HAVE_AN_ASIC
- { SEVERITY_ERR,   MSG_ASCNON,	PARAM_NONE,	"No ASCs" },
- { SEVERITY_SUCC,  MSG_ASCDEV,	PARAM_ASC,	"ASC%d" },
- { SEVERITY_ERR,   MSG_INVASC,	PARAM_ASCMAX,	"Invalid ASC id %d - range is 0 - %d" },
- { SEVERITY_INFO,  MSG_ASCLRENA,PARAM_ASC,	"ASC %d already enabled" },
- { SEVERITY_INFO,  MSG_ASCLRDIS,PARAM_ASC,	"ASC %d already disabled" },
- { SEVERITY_INFO,  MSG_ASCENA,	PARAM_ASC,	"ASC %d sent enable message" },
- { SEVERITY_INFO,  MSG_ASCDIS,	PARAM_ASC,	"ASC %d set disable flag" },
- { SEVERITY_ERR,   MSG_ASCUNW,	PARAM_ASC,	"ASC %d is not flagged WELL, cannot enable" },
- { SEVERITY_SUCC,  MSG_ASCIDENT,PARAM_ASC,	"Identify command sent to ASC%d" },
- { SEVERITY_WARN,  MSG_ASCNOID,	PARAM_ASC,	"ASC%d does not support identify" },
- { SEVERITY_ERR,   MSG_MISASCOPT, PARAM_NONE,	"Missing option after ASC number" },
- { SEVERITY_WARN,  MSG_ASCNOSET, PARAM_ASC,	"ASC %d does not support ascset" },
- { SEVERITY_INFO,  MSG_ASCHELP, PARAM_BOTH,	"ASC %d set help: %s" },
- { SEVERITY_SUCC,  MSG_ASCSETOK, PARAM_BOTH,	"ASC %d set OK" },
- { SEVERITY_ERR,   MSG_ASCSETERR, PARAM_BOTH,	"ASC %d set failed: %s" },
-#endif
  { SEVERITY_SUCC,  MSG_LOCKOK,	PARAM_NONE,	"Lock stats created" },
  { SEVERITY_WARN,  MSG_LOCKDIS,	PARAM_NONE,	"Lock stats not enabled" },
- { SEVERITY_FAIL, 0, 0, NULL }
+ { SEVERITY_FAIL, 0, (enum code_parameters)0, NULL }
 };
 
 static const char *localaddr = "127.0.0.1";
@@ -642,22 +482,6 @@ static struct io_list *io_head = NULL;
 #define io_new(init) _io_new(init, false)
 #define sock_io_new() _io_new(SOCKBUFALLOCSIZ, true)
 
-#define ALLOC_SBITEMS 2
-#define LIMIT_SBITEMS 0
-
-typedef struct sbitem {
-	char *buf;
-	size_t siz;
-	size_t tot;
-} SBITEM;
-
-// Size to grow tot if exceeded
-#define SBEXTEND 4096
-
-#define DATASB(_item) ((SBITEM *)(_item->data))
-
-static K_LIST *strbufs;
-
 static void io_reinit(struct io_data *io_data)
 {
 	io_data->cur = io_data->ptr;
@@ -670,13 +494,13 @@ static struct io_data *_io_new(size_t initial, bool socket_buf)
 	struct io_data *io_data;
 	struct io_list *io_list;
 
-	io_data = malloc(sizeof(*io_data));
-	io_data->ptr = malloc(initial);
+	io_data = (struct io_data *)malloc(sizeof(*io_data));
+	io_data->ptr = (char *)malloc(initial);
 	io_data->siz = initial;
 	io_data->sock = socket_buf;
 	io_reinit(io_data);
 
-	io_list = malloc(sizeof(*io_list));
+	io_list = (struct io_list *)malloc(sizeof(*io_list));
 
 	io_list->io_data = io_data;
 
@@ -704,14 +528,14 @@ static bool io_add(struct io_data *io_data, char *buf)
 	tot = len + 1 + dif + sizeof(JSON_CLOSE) + sizeof(JSON_END);
 
 	if (tot > io_data->siz) {
-		size_t new = io_data->siz + (2 * SOCKBUFALLOCSIZ);
+		size_t newsize = io_data->siz + (2 * SOCKBUFALLOCSIZ);
 
-		if (new < tot)
-			new = (2 + (size_t)((float)tot / (float)SOCKBUFALLOCSIZ)) * SOCKBUFALLOCSIZ;
+		if (newsize < tot)
+			newsize = (2 + (size_t)((float)tot / (float)SOCKBUFALLOCSIZ)) * SOCKBUFALLOCSIZ;
 
-		io_data->ptr = realloc(io_data->ptr, new);
+		io_data->ptr = (char *)realloc(io_data->ptr, newsize);
 		io_data->cur = io_data->ptr + dif;
-		io_data->siz = new;
+		io_data->siz = newsize;
 	}
 
 	memcpy(io_data->cur, buf, len + 1);
@@ -780,11 +604,9 @@ static char *escape_string(char *str, bool isjson)
 	if (count == 0)
 		return str;
 
-	buf = malloc(strlen(str) + count + 1);
-	if (unlikely(!buf)) {
-		quithere(1, "Failed to malloc escape buf %d",
-			    (int)(strlen(str) + count + 1));
-	}
+	buf = (char *)malloc(strlen(str) + count + 1);
+	if (unlikely(!buf))
+		quit(1, "Failed to malloc escape buf");
 
 	ptr = buf;
 	while (*str)
@@ -886,11 +708,6 @@ static struct api_data *api_add_data_full(struct api_data *root, char *name, enu
 				api_data->data = malloc(4);
 				*(uint8_t *)api_data->data = *(uint8_t *)data;
 				break;
-			case API_INT16:
-				/* Most OSs won't really alloc less than 4 */
-				api_data->data = malloc(4);
-				*(int16_t *)api_data->data = *(int16_t *)data;
-				break;
 			case API_UINT16:
 				/* Most OSs won't really alloc less than 4 */
 				api_data->data = malloc(4);
@@ -919,6 +736,7 @@ static struct api_data *api_add_data_full(struct api_data *root, char *name, enu
 			case API_DOUBLE:
 			case API_ELAPSED:
 			case API_MHS:
+			case API_KHS:
 			case API_MHTOTAL:
 			case API_UTILITY:
 			case API_FREQ:
@@ -975,11 +793,6 @@ struct api_data *api_add_const(struct api_data *root, char *name, const char *da
 struct api_data *api_add_uint8(struct api_data *root, char *name, uint8_t *data, bool copy_data)
 {
 	return api_add_data_full(root, name, API_UINT8, (void *)data, copy_data);
-}
-
-struct api_data *api_add_int16(struct api_data *root, char *name, uint16_t *data, bool copy_data)
-{
-	return api_add_data_full(root, name, API_INT16, (void *)data, copy_data);
 }
 
 struct api_data *api_add_uint16(struct api_data *root, char *name, uint16_t *data, bool copy_data)
@@ -1042,6 +855,11 @@ struct api_data *api_add_mhs(struct api_data *root, char *name, double *data, bo
 	return api_add_data_full(root, name, API_MHS, (void *)data, copy_data);
 }
 
+struct api_data *api_add_khs(struct api_data *root, char *name, double *data, bool copy_data)
+{
+	return api_add_data_full(root, name, API_KHS, (void *)data, copy_data);
+}
+
 struct api_data *api_add_mhtotal(struct api_data *root, char *name, double *data, bool copy_data)
 {
 	return api_add_data_full(root, name, API_MHTOTAL, (void *)data, copy_data);
@@ -1087,178 +905,121 @@ struct api_data *api_add_avg(struct api_data *root, char *name, float *data, boo
 	return api_add_data_full(root, name, API_AVG, (void *)data, copy_data);
 }
 
-static void add_item_buf(K_ITEM *item, const char *str)
+static struct api_data *print_data(struct api_data *root, char *buf, bool isjson, bool precom)
 {
-	size_t old_siz, new_siz, siz, ext;
-	char *buf;
-
-	buf = DATASB(item)->buf;
-	siz = (size_t)strlen(str);
-
-	old_siz = DATASB(item)->siz;
-	new_siz = old_siz + siz + 1; // include '\0'
-	if (DATASB(item)->tot < new_siz) {
-		ext = (siz + 1) + SBEXTEND - ((siz + 1) % SBEXTEND);
-		DATASB(item)->buf = buf = realloc(DATASB(item)->buf, DATASB(item)->tot + ext);
-		if (!buf) {
-			quithere(1, "OOM buf siz=%d tot=%d ext=%d",
-				    (int)siz, (int)(DATASB(item)->tot), (int)ext);
-		}
-		DATASB(item)->tot += ext;
-	}
-	memcpy(buf + old_siz, str, siz + 1);
-	DATASB(item)->siz += siz;
-}
-
-static struct api_data *print_data(struct io_data *io_data, struct api_data *root, bool isjson, bool precom)
-{
-	// N.B. strings don't use this buffer so 64 is enough (for now)
-	char buf[64];
 	struct api_data *tmp;
-	bool done, first = true;
+	bool first = true;
 	char *original, *escape;
-	K_ITEM *item;
+	char *quote;
 
-	K_WLOCK(strbufs);
-	item = k_unlink_head(strbufs);
-	K_WUNLOCK(strbufs);
+	*buf = '\0';
 
-	DATASB(item)->siz = 0;
+	if (precom) {
+		*(buf++) = *COMMA;
+		*buf = '\0';
+	}
 
-	if (precom)
-		add_item_buf(item, COMMA);
-
-	if (isjson)
-		add_item_buf(item, JSON0);
+	if (isjson) {
+		strcpy(buf, JSON0);
+		buf = strchr(buf, '\0');
+		quote = JSON1;
+	} else
+		quote = (char *)BLANK;
 
 	while (root) {
 		if (!first)
-			add_item_buf(item, COMMA);
+			*(buf++) = *COMMA;
 		else
 			first = false;
 
-		if (isjson)
-			add_item_buf(item, JSON1);
+		sprintf(buf, "%s%s%s%s", quote, root->name, quote, isjson ? ":" : "=");
 
-		add_item_buf(item, root->name);
+		buf = strchr(buf, '\0');
 
-		if (isjson)
-			add_item_buf(item, JSON1);
-
-		if (isjson)
-			add_item_buf(item, ":");
-		else
-			add_item_buf(item, "=");
-
-		first = false;
-
-		done = false;
 		switch(root->type) {
 			case API_STRING:
 			case API_CONST:
-				if (isjson)
-					add_item_buf(item, JSON1);
-				add_item_buf(item, (char *)(root->data));
-				if (isjson)
-					add_item_buf(item, JSON1);
-				done = true;
+				sprintf(buf, "%s%s%s", quote, (char *)(root->data), quote);
 				break;
 			case API_ESCAPE:
 				original = (char *)(root->data);
 				escape = escape_string((char *)(root->data), isjson);
-				if (isjson)
-					add_item_buf(item, JSON1);
-				add_item_buf(item, escape);
-				if (isjson)
-					add_item_buf(item, JSON1);
+				sprintf(buf, "%s%s%s", quote, escape, quote);
 				if (escape != original)
 					free(escape);
-				done = true;
 				break;
 			case API_UINT8:
-				snprintf(buf, sizeof(buf), "%u", *(uint8_t *)root->data);
-				break;
-			case API_INT16:
-				snprintf(buf, sizeof(buf), "%d", *(int16_t *)root->data);
+				sprintf(buf, "%u", *(uint8_t *)root->data);
 				break;
 			case API_UINT16:
-				snprintf(buf, sizeof(buf), "%u", *(uint16_t *)root->data);
+				sprintf(buf, "%u", *(uint16_t *)root->data);
 				break;
 			case API_INT:
-				snprintf(buf, sizeof(buf), "%d", *((int *)(root->data)));
+				sprintf(buf, "%d", *((int *)(root->data)));
 				break;
 			case API_UINT:
-				snprintf(buf, sizeof(buf), "%u", *((unsigned int *)(root->data)));
+				sprintf(buf, "%u", *((unsigned int *)(root->data)));
 				break;
 			case API_UINT32:
-				snprintf(buf, sizeof(buf), "%"PRIu32, *((uint32_t *)(root->data)));
+				sprintf(buf, "%"PRIu32, *((uint32_t *)(root->data)));
 				break;
 			case API_HEX32:
-				if (isjson)
-					add_item_buf(item, JSON1);
 				snprintf(buf, sizeof(buf), "0x%08x", *((uint32_t *)(root->data)));
-				add_item_buf(item, buf);
-				if (isjson)
-					add_item_buf(item, JSON1);
-				done = true;
 				break;
 			case API_UINT64:
-				snprintf(buf, sizeof(buf), "%"PRIu64, *((uint64_t *)(root->data)));
+				sprintf(buf, "%"PRIu64, *((uint64_t *)(root->data)));
 				break;
 			case API_TIME:
-				snprintf(buf, sizeof(buf), "%lu", *((unsigned long *)(root->data)));
+				sprintf(buf, "%lu", *((unsigned long *)(root->data)));
 				break;
 			case API_DOUBLE:
-				snprintf(buf, sizeof(buf), "%f", *((double *)(root->data)));
+				sprintf(buf, "%f", *((double *)(root->data)));
 				break;
 			case API_ELAPSED:
-				snprintf(buf, sizeof(buf), "%.0f", *((double *)(root->data)));
+				sprintf(buf, "%.0f", *((double *)(root->data)));
 				break;
 			case API_UTILITY:
 			case API_FREQ:
 			case API_MHS:
-				snprintf(buf, sizeof(buf), "%.2f", *((double *)(root->data)));
+				sprintf(buf, "%.4f", *((double *)(root->data)));
+				break;
+			case API_KHS:
+				sprintf(buf, "%.0f", *((double *)(root->data)));
 				break;
 			case API_VOLTS:
 			case API_AVG:
-				snprintf(buf, sizeof(buf), "%.3f", *((float *)(root->data)));
+				sprintf(buf, "%.3f", *((float *)(root->data)));
 				break;
 			case API_MHTOTAL:
-				snprintf(buf, sizeof(buf), "%.4f", *((double *)(root->data)));
+				sprintf(buf, "%.4f", *((double *)(root->data)));
 				break;
 			case API_HS:
-				snprintf(buf, sizeof(buf), "%.15f", *((double *)(root->data)));
+				sprintf(buf, "%.15f", *((double *)(root->data)));
 				break;
 			case API_DIFF:
-				snprintf(buf, sizeof(buf), "%.8f", *((double *)(root->data)));
+				sprintf(buf, "%.8f", *((double *)(root->data)));
 				break;
 			case API_BOOL:
-				snprintf(buf, sizeof(buf), "%s", *((bool *)(root->data)) ? TRUESTR : FALSESTR);
+				sprintf(buf, "%s", *((bool *)(root->data)) ? TRUESTR : FALSESTR);
 				break;
 			case API_TIMEVAL:
-				snprintf(buf, sizeof(buf), "%ld.%06ld",
-					(long)((struct timeval *)(root->data))->tv_sec,
-					(long)((struct timeval *)(root->data))->tv_usec);
+				sprintf(buf, "%"PRIu64".%06lu",
+					(uint64_t)((struct timeval *)(root->data))->tv_sec,
+					(unsigned long)((struct timeval *)(root->data))->tv_usec);
 				break;
 			case API_TEMP:
-				snprintf(buf, sizeof(buf), "%.2f", *((float *)(root->data)));
+				sprintf(buf, "%.2f", *((float *)(root->data)));
 				break;
 			case API_PERCENT:
-				snprintf(buf, sizeof(buf), "%.4f", *((double *)(root->data)) * 100.0);
+				sprintf(buf, "%.4f", *((double *)(root->data)) * 100.0);
 				break;
 			default:
 				applog(LOG_ERR, "API: unknown2 data type %d ignored", root->type);
-				if (isjson)
-					add_item_buf(item, JSON1);
-				add_item_buf(item, UNKNOWN);
-				if (isjson)
-					add_item_buf(item, JSON1);
-				done = true;
+				sprintf(buf, "%s%s%s", quote, UNKNOWN, quote);
 				break;
 		}
 
-		if (!done)
-			add_item_buf(item, buf);
+		buf = strchr(buf, '\0');
 
 		free(root->name);
 		if (root->data_was_malloc)
@@ -1276,94 +1037,13 @@ static struct api_data *print_data(struct io_data *io_data, struct api_data *roo
 		}
 	}
 
-	if (isjson)
-		add_item_buf(item, JSON5);
-	else
-		add_item_buf(item, SEPSTR);
-
-	io_add(io_data, DATASB(item)->buf);
-
-	K_WLOCK(strbufs);
-	k_add_head(strbufs, item);
-	K_WUNLOCK(strbufs);
+	strcpy(buf, isjson ? JSON5 : SEPSTR);
 
 	return root;
 }
 
 #define DRIVER_COUNT_DRV(X) if (devices[i]->drv->drv_id == DRIVER_##X) \
 	count++;
-
-#ifdef HAVE_AN_ASIC
-static int numascs(void)
-{
-	int count = 0;
-	int i;
-
-	rd_lock(&devices_lock);
-	for (i = 0; i < total_devices; i++) {
-		ASIC_PARSE_COMMANDS(DRIVER_COUNT_DRV)
-	}
-	rd_unlock(&devices_lock);
-	return count;
-}
-
-static int ascdevice(int ascid)
-{
-	int count = 0;
-	int i;
-
-	rd_lock(&devices_lock);
-	for (i = 0; i < total_devices; i++) {
-		ASIC_PARSE_COMMANDS(DRIVER_COUNT_DRV)
-		if (count == (ascid + 1))
-			goto foundit;
-	}
-
-	rd_unlock(&devices_lock);
-	return -1;
-
-foundit:
-
-	rd_unlock(&devices_lock);
-	return i;
-}
-#endif
-
-#ifdef HAVE_AN_FPGA
-static int numpgas(void)
-{
-	int count = 0;
-	int i;
-
-	rd_lock(&devices_lock);
-	for (i = 0; i < total_devices; i++) {
-		FPGA_PARSE_COMMANDS(DRIVER_COUNT_DRV)
-	}
-	rd_unlock(&devices_lock);
-	return count;
-}
-
-static int pgadevice(int pgaid)
-{
-	int count = 0;
-	int i;
-
-	rd_lock(&devices_lock);
-	for (i = 0; i < total_devices; i++) {
-		FPGA_PARSE_COMMANDS(DRIVER_COUNT_DRV)
-		if (count == (pgaid + 1))
-			goto foundit;
-	}
-
-	rd_unlock(&devices_lock);
-	return -1;
-
-foundit:
-
-	rd_unlock(&devices_lock);
-	return i;
-}
-#endif
 
 // All replies (except BYE and RESTART) start with a message
 //  thus for JSON, message() inserts JSON_START at the front
@@ -1372,13 +1052,9 @@ static void message(struct io_data *io_data, int messageid, int paramid, char *p
 {
 	struct api_data *root = NULL;
 	char buf[TMPBUFSIZ];
+	char buf2[TMPBUFSIZ];
 	char severity[2];
-#ifdef HAVE_AN_ASIC
-	int asc;
-#endif
-#ifdef HAVE_AN_FPGA
-	int pga;
-#endif
+
 	int i;
 
 	if (isjson)
@@ -1404,8 +1080,7 @@ static void message(struct io_data *io_data, int messageid, int paramid, char *p
 			severity[1] = '\0';
 
 			switch(codes[i].params) {
-				case PARAM_PGA:
-				case PARAM_ASC:
+				case PARAM_GPU:
 				case PARAM_PID:
 				case PARAM_INT:
 					sprintf(buf, codes[i].description, paramid);
@@ -1413,18 +1088,9 @@ static void message(struct io_data *io_data, int messageid, int paramid, char *p
 				case PARAM_POOL:
 					sprintf(buf, codes[i].description, paramid, pools[paramid]->rpc_url);
 					break;
-#ifdef HAVE_AN_FPGA
-				case PARAM_PGAMAX:
-					pga = numpgas();
-					sprintf(buf, codes[i].description, paramid, pga - 1);
+				case PARAM_GPUMAX:
+					sprintf(buf, codes[i].description, paramid, nDevs - 1);
 					break;
-#endif
-#ifdef HAVE_AN_ASIC
-				case PARAM_ASCMAX:
-					asc = numascs();
-					sprintf(buf, codes[i].description, paramid, asc - 1);
-					break;
-#endif
 				case PARAM_PMAX:
 					sprintf(buf, codes[i].description, total_pools);
 					break;
@@ -1432,21 +1098,7 @@ static void message(struct io_data *io_data, int messageid, int paramid, char *p
 					sprintf(buf, codes[i].description, paramid, total_pools - 1);
 					break;
 				case PARAM_DMAX:
-#ifdef HAVE_AN_ASIC
-					asc = numascs();
-#endif
-#ifdef HAVE_AN_FPGA
-					pga = numpgas();
-#endif
-
-					sprintf(buf, codes[i].description
-#ifdef HAVE_AN_ASIC
-						, asc
-#endif
-#ifdef HAVE_AN_FPGA
-						, pga
-#endif
-						);
+					sprintf(buf, codes[i].description, nDevs);
 					break;
 				case PARAM_CMD:
 					sprintf(buf, codes[i].description, JSON_COMMAND);
@@ -1474,7 +1126,8 @@ static void message(struct io_data *io_data, int messageid, int paramid, char *p
 			root = api_add_escape(root, "Msg", buf, false);
 			root = api_add_escape(root, "Description", opt_api_description, false);
 
-			root = print_data(io_data, root, isjson, false);
+			root = print_data(root, buf2, isjson, false);
+			io_add(io_data, buf2);
 			if (isjson)
 				io_add(io_data, JSON_CLOSE);
 			return;
@@ -1489,7 +1142,8 @@ static void message(struct io_data *io_data, int messageid, int paramid, char *p
 	root = api_add_escape(root, "Msg", buf, false);
 	root = api_add_escape(root, "Description", opt_api_description, false);
 
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf2, isjson, false);
+	io_add(io_data, buf2);
 	if (isjson)
 		io_add(io_data, JSON_CLOSE);
 }
@@ -1894,15 +1548,17 @@ static void lockstats(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __ma
 static void apiversion(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open;
 
 	message(io_data, MSG_VERSION, 0, NULL, isjson);
 	io_open = io_add(io_data, isjson ? COMSTR JSON_VERSION : _VERSION COMSTR);
 
-	root = api_add_string(root, "CGMiner", VERSION, false);
+	root = api_add_string(root, "OGMiner", VERSION, false);
 	root = api_add_const(root, "API", APIVERSION, false);
 
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf, isjson, false);
+	io_add(io_data, buf);
 	if (isjson && io_open)
 		io_close(io_data);
 }
@@ -1910,24 +1566,33 @@ static void apiversion(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 static void minerconfig(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open;
-	int asccount = 0;
-	int pgacount = 0;
+	int gpucount = 0;
+	char *adlinuse = (char *)NO;
+#ifdef HAVE_ADL
+	const char *adl = YES;
+	int i;
 
-#ifdef HAVE_AN_ASIC
-	asccount = numascs();
+	for (i = 0; i < nDevs; i++) {
+		if (gpus[i].has_adl) {
+			adlinuse = (char *)YES;
+			break;
+		}
+	}
+#else
+	const char *adl = NO;
 #endif
 
-#ifdef HAVE_AN_FPGA
-	pgacount = numpgas();
-#endif
+	gpucount = nDevs;
 
 	message(io_data, MSG_MINECONFIG, 0, NULL, isjson);
 	io_open = io_add(io_data, isjson ? COMSTR JSON_MINECONFIG : _MINECONFIG COMSTR);
 
-	root = api_add_int(root, "ASC Count", &asccount, false);
-	root = api_add_int(root, "PGA Count", &pgacount, false);
+	root = api_add_int(root, "GPU Count", &gpucount, false);
 	root = api_add_int(root, "Pool Count", &total_pools, false);
+	root = api_add_const(root, "ADL", (char *)adl, false);
+	root = api_add_string(root, "ADL in use", adlinuse, false);
 	root = api_add_const(root, "Strategy", strategies[pool_strategy].s, false);
 	root = api_add_int(root, "Log Interval", &opt_log_interval, false);
 	root = api_add_const(root, "Device Code", DEVICECODE, false);
@@ -1936,16 +1601,9 @@ static void minerconfig(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __
 	root = api_add_int(root, "ScanTime", &opt_scantime, false);
 	root = api_add_int(root, "Queue", &opt_queue, false);
 	root = api_add_int(root, "Expiry", &opt_expiry, false);
-#ifdef USE_USBUTILS
-	if (hotplug_time == 0)
-		root = api_add_const(root, "Hotplug", DISABLED, false);
-	else
-		root = api_add_int(root, "Hotplug", &hotplug_time, false);
-#else
-	root = api_add_const(root, "Hotplug", NONE, false);
-#endif
 
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf, isjson, false);
+	io_add(io_data, buf);
 	if (isjson && io_open)
 		io_close(io_data);
 }
@@ -1968,27 +1626,29 @@ static const char *status2str(enum alive status)
 	}
 }
 
-#ifdef HAVE_AN_ASIC
-static void ascstatus(struct io_data *io_data, int asc, bool isjson, bool precom)
+static void gpustatus(struct io_data *io_data, int gpu, bool isjson, bool precom)
 {
 	struct api_data *root = NULL;
+	char intensity[20];
+	char buf[TMPBUFSIZ];
 	char *enabled;
 	char *status;
-	int numasc = numascs();
+	float gt, gv;
+	int ga, gf, gp, gc, gm, pt;
 
-	if (numasc > 0 && asc >= 0 && asc < numasc) {
-		int dev = ascdevice(asc);
-		if (dev < 0) // Should never happen
-			return;
-
-		struct cgpu_info *cgpu = get_devices(dev);
-		float temp = cgpu->temp;
+	if (gpu >= 0 && gpu < nDevs) {
+		struct cgpu_info *cgpu = &gpus[gpu];
 		double dev_runtime;
 
 		dev_runtime = cgpu_runtime(cgpu);
 
 		cgpu->utility = cgpu->accepted / dev_runtime * 60;
 
+#ifdef HAVE_ADL
+		if (!gpu_stats(gpu, &gt, &gc, &gm, &gv, &ga, &gf, &gp, &pt))
+#endif
+			gt = gv = gm = gc = ga = gf = gp = pt = 0;
+
 		if (cgpu->deven != DEV_DISABLED)
 			enabled = (char *)YES;
 		else
@@ -1996,24 +1656,38 @@ static void ascstatus(struct io_data *io_data, int asc, bool isjson, bool precom
 
 		status = (char *)status2str(cgpu->status);
 
-		root = api_add_int(root, "ASC", &asc, false);
-		root = api_add_string(root, "Name", cgpu->drv->name, false);
-		root = api_add_int(root, "ID", &(cgpu->device_id), false);
+		if (cgpu->dynamic)
+			strcpy(intensity, DYNAMIC);
+		else
+			sprintf(intensity, "%d", cgpu->intensity);
+
+		root = api_add_int(root, "GPU", &gpu, false);
 		root = api_add_string(root, "Enabled", enabled, false);
 		root = api_add_string(root, "Status", status, false);
-		root = api_add_temp(root, "Temperature", &temp, false);
-		double mhs = cgpu->total_mhashes / dev_runtime;
+		root = api_add_temp(root, "Temperature", &gt, false);
+		root = api_add_int(root, "Fan Speed", &gf, false);
+		root = api_add_int(root, "Fan Percent", &gp, false);
+		root = api_add_int(root, "GPU Clock", &gc, false);
+		root = api_add_int(root, "Memory Clock", &gm, false);
+		root = api_add_volts(root, "GPU Voltage", &gv, false);
+		root = api_add_int(root, "GPU Activity", &ga, false);
+		root = api_add_int(root, "Powertune", &pt, false);
+		double mhs = cgpu->total_mhashes / total_secs;
 		root = api_add_mhs(root, "MHS av", &mhs, false);
 		char mhsname[27];
 		sprintf(mhsname, "MHS %ds", opt_log_interval);
 		root = api_add_mhs(root, mhsname, &(cgpu->rolling), false);
-		root = api_add_mhs(root, "MHS 1m", &cgpu->rolling1, false);
-		root = api_add_mhs(root, "MHS 5m", &cgpu->rolling5, false);
-		root = api_add_mhs(root, "MHS 15m", &cgpu->rolling15, false);
+		double khs_avg = mhs * 1000.0;
+		double khs_rolling = cgpu->rolling * 1000.0;
+		root = api_add_khs(root, "KHS av", &khs_avg, false);
+		char khsname[27];
+		sprintf(khsname, "KHS %ds", opt_log_interval);
+		root = api_add_khs(root, khsname, &khs_rolling, false);
 		root = api_add_int(root, "Accepted", &(cgpu->accepted), false);
 		root = api_add_int(root, "Rejected", &(cgpu->rejected), false);
 		root = api_add_int(root, "Hardware Errors", &(cgpu->hw_errors), false);
 		root = api_add_utility(root, "Utility", &(cgpu->utility), false);
+		root = api_add_string(root, "Intensity", intensity, false);
 		int last_share_pool = cgpu->last_share_pool_time > 0 ?
 					cgpu->last_share_pool : -1;
 		root = api_add_int(root, "Last Share Pool", &last_share_pool, false);
@@ -2023,9 +1697,6 @@ static void ascstatus(struct io_data *io_data, int asc, bool isjson, bool precom
 		root = api_add_diff(root, "Difficulty Accepted", &(cgpu->diff_accepted), false);
 		root = api_add_diff(root, "Difficulty Rejected", &(cgpu->diff_rejected), false);
 		root = api_add_diff(root, "Last Share Difficulty", &(cgpu->last_share_diff), false);
-#ifdef USE_USBUTILS
-		root = api_add_bool(root, "No Device", &(cgpu->usbinfo.nodev), false);
-#endif
 		root = api_add_time(root, "Last Valid Work", &(cgpu->last_device_valid_work), false);
 		double hwp = (cgpu->hw_errors + cgpu->diff1) ?
 				(double)(cgpu->hw_errors) / (double)(cgpu->hw_errors + cgpu->diff1) : 0;
@@ -2033,118 +1704,22 @@ static void ascstatus(struct io_data *io_data, int asc, bool isjson, bool precom
 		double rejp = cgpu->diff1 ?
 				(double)(cgpu->diff_rejected) / (double)(cgpu->diff1) : 0;
 		root = api_add_percent(root, "Device Rejected%", &rejp, false);
-		root = api_add_elapsed(root, "Device Elapsed", &(dev_runtime), false);
+		root = api_add_elapsed(root, "Device Elapsed", &(total_secs), true); // GPUs don't hotplug
 
-		root = print_data(io_data, root, isjson, precom);
+		root = print_data(root, buf, isjson, precom);
+		io_add(io_data, buf);
 	}
 }
-#endif
-
-#ifdef HAVE_AN_FPGA
-static void pgastatus(struct io_data *io_data, int pga, bool isjson, bool precom)
-{
-	struct api_data *root = NULL;
-	char *enabled;
-	char *status;
-	int numpga = numpgas();
-
-	if (numpga > 0 && pga >= 0 && pga < numpga) {
-		int dev = pgadevice(pga);
-		if (dev < 0) // Should never happen
-			return;
-
-		struct cgpu_info *cgpu = get_devices(dev);
-		double frequency = 0;
-		float temp = cgpu->temp;
-		struct timeval now;
-		double dev_runtime;
-
-		if (cgpu->dev_start_tv.tv_sec == 0)
-			dev_runtime = total_secs;
-		else {
-			cgtime(&now);
-			dev_runtime = tdiff(&now, &(cgpu->dev_start_tv));
-		}
-
-		if (dev_runtime < 1.0)
-			dev_runtime = 1.0;
-
-#ifdef USE_MODMINER
-		if (cgpu->drv->drv_id == DRIVER_modminer)
-			frequency = cgpu->clock;
-#endif
-
-		cgpu->utility = cgpu->accepted / dev_runtime * 60;
-
-		if (cgpu->deven != DEV_DISABLED)
-			enabled = (char *)YES;
-		else
-			enabled = (char *)NO;
-
-		status = (char *)status2str(cgpu->status);
-
-		root = api_add_int(root, "PGA", &pga, false);
-		root = api_add_string(root, "Name", cgpu->drv->name, false);
-		root = api_add_int(root, "ID", &(cgpu->device_id), false);
-		root = api_add_string(root, "Enabled", enabled, false);
-		root = api_add_string(root, "Status", status, false);
-		root = api_add_temp(root, "Temperature", &temp, false);
-		double mhs = cgpu->total_mhashes / dev_runtime;
-		root = api_add_mhs(root, "MHS av", &mhs, false);
-		char mhsname[27];
-		sprintf(mhsname, "MHS %ds", opt_log_interval);
-		root = api_add_mhs(root, mhsname, &(cgpu->rolling), false);
-		root = api_add_mhs(root, "MHS 1m", &cgpu->rolling1, false);
-		root = api_add_mhs(root, "MHS 5m", &cgpu->rolling5, false);
-		root = api_add_mhs(root, "MHS 15m", &cgpu->rolling15, false);
-		root = api_add_int(root, "Accepted", &(cgpu->accepted), false);
-		root = api_add_int(root, "Rejected", &(cgpu->rejected), false);
-		root = api_add_int(root, "Hardware Errors", &(cgpu->hw_errors), false);
-		root = api_add_utility(root, "Utility", &(cgpu->utility), false);
-		int last_share_pool = cgpu->last_share_pool_time > 0 ?
-					cgpu->last_share_pool : -1;
-		root = api_add_int(root, "Last Share Pool", &last_share_pool, false);
-		root = api_add_time(root, "Last Share Time", &(cgpu->last_share_pool_time), false);
-		root = api_add_mhtotal(root, "Total MH", &(cgpu->total_mhashes), false);
-		root = api_add_freq(root, "Frequency", &frequency, false);
-		root = api_add_int(root, "Diff1 Work", &(cgpu->diff1), false);
-		root = api_add_diff(root, "Difficulty Accepted", &(cgpu->diff_accepted), false);
-		root = api_add_diff(root, "Difficulty Rejected", &(cgpu->diff_rejected), false);
-		root = api_add_diff(root, "Last Share Difficulty", &(cgpu->last_share_diff), false);
-#ifdef USE_USBUTILS
-		root = api_add_bool(root, "No Device", &(cgpu->usbinfo.nodev), false);
-#endif
-		root = api_add_time(root, "Last Valid Work", &(cgpu->last_device_valid_work), false);
-		double hwp = (cgpu->hw_errors + cgpu->diff1) ?
-				(double)(cgpu->hw_errors) / (double)(cgpu->hw_errors + cgpu->diff1) : 0;
-		root = api_add_percent(root, "Device Hardware%", &hwp, false);
-		double rejp = cgpu->diff1 ?
-				(double)(cgpu->diff_rejected) / (double)(cgpu->diff1) : 0;
-		root = api_add_percent(root, "Device Rejected%", &rejp, false);
-		root = api_add_elapsed(root, "Device Elapsed", &(dev_runtime), false);
-
-		root = print_data(io_data, root, isjson, precom);
-	}
-}
-#endif
 
 static void devstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	bool io_open = false;
 	int devcount = 0;
-	int numasc = 0;
-	int numpga = 0;
+	int numgpu = 0;
 	int i;
+	numgpu = nDevs;
 
-#ifdef HAVE_AN_ASIC
-	numasc = numascs();
-#endif
-
-#ifdef HAVE_AN_FPGA
-	numpga = numpgas();
-#endif
-
-	if (numpga == 0 && numasc == 0) {
+	if (numgpu == 0) {
 		message(io_data, MSG_NODEVS, 0, NULL, isjson);
 		return;
 	}
@@ -2154,308 +1729,51 @@ static void devstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __ma
 	if (isjson)
 		io_open = io_add(io_data, COMSTR JSON_DEVS);
 
-#ifdef HAVE_AN_ASIC
-	if (numasc > 0) {
-		for (i = 0; i < numasc; i++) {
-			ascstatus(io_data, i, isjson, isjson && devcount > 0);
+	for (i = 0; i < nDevs; i++) {
+		gpustatus(io_data, i, isjson, isjson && devcount > 0);
 
-			devcount++;
-		}
+		devcount++;
 	}
-#endif
-
-#ifdef HAVE_AN_FPGA
-	if (numpga > 0) {
-		for (i = 0; i < numpga; i++) {
-			pgastatus(io_data, i, isjson, isjson && devcount > 0);
-
-			devcount++;
-		}
-	}
-#endif
-
 	if (isjson && io_open)
 		io_close(io_data);
 }
 
-static void edevstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
+static void gpudev(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
 {
 	bool io_open = false;
-	int devcount = 0;
-	int numasc = 0;
-	int numpga = 0;
-	int i;
-	time_t howoldsec = 0;
+	int id;
 
-#ifdef HAVE_AN_ASIC
-	numasc = numascs();
-#endif
-
-#ifdef HAVE_AN_FPGA
-	numpga = numpgas();
-#endif
-
-	if (numpga == 0 && numasc == 0) {
-		message(io_data, MSG_NODEVS, 0, NULL, isjson);
+	if (nDevs == 0) {
+		message(io_data, MSG_GPUNON, 0, NULL, isjson);
 		return;
 	}
 
-	if (param && *param)
-		howoldsec = (time_t)atoi(param);
+	if (param == NULL || *param == '\0') {
+		message(io_data, MSG_MISID, 0, NULL, isjson);
+		return;
+	}
 
-	message(io_data, MSG_DEVS, 0, NULL, isjson);
+	id = atoi(param);
+	if (id < 0 || id >= nDevs) {
+		message(io_data, MSG_INVGPU, id, NULL, isjson);
+		return;
+	}
+
+	message(io_data, MSG_GPUDEV, id, NULL, isjson);
+
 	if (isjson)
-		io_open = io_add(io_data, COMSTR JSON_DEVS);
+		io_open = io_add(io_data, COMSTR JSON_GPU);
 
-#ifdef HAVE_AN_ASIC
-	if (numasc > 0) {
-		for (i = 0; i < numasc; i++) {
-#ifdef USE_USBUTILS
-			int dev = ascdevice(i);
-			if (dev < 0) // Should never happen
-				continue;
-
-			struct cgpu_info *cgpu = get_devices(dev);
-			if (!cgpu)
-				continue;
-			if (cgpu->blacklisted)
-				continue;
-			if (cgpu->usbinfo.nodev) {
-				if (howoldsec <= 0)
-					continue;
-				if ((when - cgpu->usbinfo.last_nodev.tv_sec) >= howoldsec)
-					continue;
-			}
-#endif
-
-			ascstatus(io_data, i, isjson, isjson && devcount > 0);
-
-			devcount++;
-		}
-	}
-#endif
-
-#ifdef HAVE_AN_FPGA
-	if (numpga > 0) {
-		for (i = 0; i < numpga; i++) {
-#ifdef USE_USBUTILS
-			int dev = pgadevice(i);
-			if (dev < 0) // Should never happen
-				continue;
-
-			struct cgpu_info *cgpu = get_devices(dev);
-			if (!cgpu)
-				continue;
-			if (cgpu->blacklisted)
-				continue;
-			if (cgpu->usbinfo.nodev) {
-				if (howoldsec <= 0)
-					continue;
-				if ((when - cgpu->usbinfo.last_nodev.tv_sec) >= howoldsec)
-					continue;
-			}
-#endif
-
-			pgastatus(io_data, i, isjson, isjson && devcount > 0);
-
-			devcount++;
-		}
-	}
-#endif
+	gpustatus(io_data, id, isjson, false);
 
 	if (isjson && io_open)
 		io_close(io_data);
 }
-
-#ifdef HAVE_AN_FPGA
-static void pgadev(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	bool io_open = false;
-	int numpga = numpgas();
-	int id;
-
-	if (numpga == 0) {
-		message(io_data, MSG_PGANON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numpga) {
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	message(io_data, MSG_PGADEV, id, NULL, isjson);
-
-	if (isjson)
-		io_open = io_add(io_data, COMSTR JSON_PGA);
-
-	pgastatus(io_data, id, isjson, false);
-
-	if (isjson && io_open)
-		io_close(io_data);
-}
-
-static void pgaenable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	int numpga = numpgas();
-	struct thr_info *thr;
-	int pga;
-	int id;
-	int i;
-
-	if (numpga == 0) {
-		message(io_data, MSG_PGANON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numpga) {
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	int dev = pgadevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-
-	applog(LOG_DEBUG, "API: request to pgaenable pgaid %d device %d %s%u",
-			id, dev, cgpu->drv->name, cgpu->device_id);
-
-	if (cgpu->deven != DEV_DISABLED) {
-		message(io_data, MSG_PGALRENA, id, NULL, isjson);
-		return;
-	}
-
-#if 0 /* A DISABLED device wont change status FIXME: should disabling make it WELL? */
-	if (cgpu->status != LIFE_WELL) {
-		message(io_data, MSG_PGAUNW, id, NULL, isjson);
-		return;
-	}
-#endif
-
-#ifdef USE_USBUTILS
-	if (cgpu->usbinfo.nodev) {
-		message(io_data, MSG_PGAUSBNODEV, id, NULL, isjson);
-		return;
-	}
-#endif
-
-	for (i = 0; i < mining_threads; i++) {
-		thr = get_thread(i);
-		pga = thr->cgpu->cgminer_id;
-		if (pga == dev) {
-			cgpu->deven = DEV_ENABLED;
-			applog(LOG_DEBUG, "API: Pushing sem post to thread %d", thr->id);
-			cgsem_post(&thr->sem);
-		}
-	}
-
-	message(io_data, MSG_PGAENA, id, NULL, isjson);
-}
-
-static void pgadisable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	int numpga = numpgas();
-	int id;
-
-	if (numpga == 0) {
-		message(io_data, MSG_PGANON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numpga) {
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	int dev = pgadevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-
-	applog(LOG_DEBUG, "API: request to pgadisable pgaid %d device %d %s%u",
-			id, dev, cgpu->drv->name, cgpu->device_id);
-
-	if (cgpu->deven == DEV_DISABLED) {
-		message(io_data, MSG_PGALRDIS, id, NULL, isjson);
-		return;
-	}
-
-	cgpu->deven = DEV_DISABLED;
-
-	message(io_data, MSG_PGADIS, id, NULL, isjson);
-}
-
-static void pgaidentify(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	struct device_drv *drv;
-	int numpga = numpgas();
-	int id;
-
-	if (numpga == 0) {
-		message(io_data, MSG_PGANON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numpga) {
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	int dev = pgadevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-	drv = cgpu->drv;
-
-	if (!drv->identify_device)
-		message(io_data, MSG_PGANOID, id, NULL, isjson);
-	else {
-		drv->identify_device(cgpu);
-		message(io_data, MSG_PGAIDENT, id, NULL, isjson);
-	}
-}
-#endif
 
 static void poolstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open = false;
 	char *status, *lp;
 	int i;
@@ -2476,7 +1794,7 @@ static void poolstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 		if (pool->removed)
 			continue;
 
-		switch (pool->enabled) {
+		switch (pool->state) {
 			case POOL_DISABLED:
 				status = (char *)DISABLED;
 				break;
@@ -2500,6 +1818,8 @@ static void poolstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 			lp = (char *)NO;
 
 		root = api_add_int(root, "POOL", &i, false);
+		root = api_add_string(root, "Name", pool->name, false);
+		root = api_add_string(root, "Coin", pool->coin, false);
 		root = api_add_escape(root, "URL", pool->rpc_url, false);
 		root = api_add_string(root, "Status", status, false);
 		root = api_add_int(root, "Priority", &(pool->prio), false);
@@ -2542,7 +1862,8 @@ static void poolstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 				(double)(pool->diff_stale) / (double)(pool->diff_accepted + pool->diff_rejected + pool->diff_stale) : 0;
 		root = api_add_percent(root, "Pool Stale%", &stalep, false);
 
-		root = print_data(io_data, root, isjson, isjson && (i > 0));
+		root = print_data(root, buf, isjson, isjson && (i > 0));
+		io_add(io_data, buf);
 	}
 
 	if (isjson && io_open)
@@ -2552,6 +1873,7 @@ static void poolstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 static void summary(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open;
 	double utility, mhs, work_utility;
 
@@ -2570,9 +1892,12 @@ static void summary(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __mayb
 	char mhsname[27];
 	sprintf(mhsname, "MHS %ds", opt_log_interval);
 	root = api_add_mhs(root, mhsname, &(total_rolling), false);
-	root = api_add_mhs(root, "MHS 1m", &rolling1, false);
-	root = api_add_mhs(root, "MHS 5m", &rolling5, false);
-	root = api_add_mhs(root, "MHS 15m", &rolling15, false);
+	double khs_avg = mhs * 1000.0;
+	double khs_rolling = total_rolling * 1000.0;
+	root = api_add_khs(root, "KHS av", &khs_avg, false);
+	char khsname[27];
+	sprintf(khsname, "KHS %ds", opt_log_interval);
+	root = api_add_khs(root, khsname, &khs_rolling, false);
 	root = api_add_uint(root, "Found Blocks", &(found_blocks), true);
 	root = api_add_int(root, "Getworks", &(total_getworks), true);
 	root = api_add_int(root, "Accepted", &(total_accepted), true);
@@ -2607,27 +1932,133 @@ static void summary(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __mayb
 
 	mutex_unlock(&hash_lock);
 
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf, isjson, false);
+	io_add(io_data, buf);
 	if (isjson && io_open)
 		io_close(io_data);
 }
 
-static void pgacount(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
+static void gpuenable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
+{
+	struct thr_info *thr;
+	int gpu;
+	int id;
+	int i;
+
+	if (gpu_threads == 0) {
+		message(io_data, MSG_GPUNON, 0, NULL, isjson);
+		return;
+	}
+
+	if (param == NULL || *param == '\0') {
+		message(io_data, MSG_MISID, 0, NULL, isjson);
+		return;
+	}
+
+	id = atoi(param);
+	if (id < 0 || id >= nDevs) {
+		message(io_data, MSG_INVGPU, id, NULL, isjson);
+		return;
+	}
+
+	applog(LOG_DEBUG, "API: request to gpuenable gpuid %d %s%u",
+			id, gpus[id].drv->name, gpus[id].device_id);
+
+	if (gpus[id].deven != DEV_DISABLED) {
+		message(io_data, MSG_ALRENA, id, NULL, isjson);
+		return;
+	}
+
+	for (i = 0; i < gpu_threads; i++) {
+		thr = get_thread(i);
+		gpu = thr->cgpu->device_id;
+		if (gpu == id) {
+			if (thr->cgpu->status != LIFE_WELL) {
+				message(io_data, MSG_GPUMRE, id, NULL, isjson);
+				return;
+			}
+			gpus[id].deven = DEV_ENABLED;
+			applog(LOG_DEBUG, "API Pushing sem post to thread %d", thr->id);
+			cgsem_post(&thr->sem);
+		}
+	}
+
+	message(io_data, MSG_GPUREN, id, NULL, isjson);
+}
+
+static void gpudisable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
+{
+	int id;
+
+	if (nDevs == 0) {
+		message(io_data, MSG_GPUNON, 0, NULL, isjson);
+		return;
+	}
+
+	if (param == NULL || *param == '\0') {
+		message(io_data, MSG_MISID, 0, NULL, isjson);
+		return;
+	}
+
+	id = atoi(param);
+	if (id < 0 || id >= nDevs) {
+		message(io_data, MSG_INVGPU, id, NULL, isjson);
+		return;
+	}
+
+	applog(LOG_DEBUG, "API: request to gpudisable gpuid %d %s%u",
+			id, gpus[id].drv->name, gpus[id].device_id);
+
+	if (gpus[id].deven == DEV_DISABLED) {
+		message(io_data, MSG_ALRDIS, id, NULL, isjson);
+		return;
+	}
+
+	gpus[id].deven = DEV_DISABLED;
+
+	message(io_data, MSG_GPUDIS, id, NULL, isjson);
+}
+
+static void gpurestart(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
+{
+	int id;
+
+	if (nDevs == 0) {
+		message(io_data, MSG_GPUNON, 0, NULL, isjson);
+		return;
+	}
+
+	if (param == NULL || *param == '\0') {
+		message(io_data, MSG_MISID, 0, NULL, isjson);
+		return;
+	}
+
+	id = atoi(param);
+	if (id < 0 || id >= nDevs) {
+		message(io_data, MSG_INVGPU, id, NULL, isjson);
+		return;
+	}
+
+	reinit_device(&gpus[id]);
+
+	message(io_data, MSG_GPUREI, id, NULL, isjson);
+}
+
+static void gpucount(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open;
-	int count = 0;
+	int numgpu = 0;
+	numgpu = nDevs;
 
-#ifdef HAVE_AN_FPGA
-	count = numpgas();
-#endif
+	message(io_data, MSG_NUMGPU, 0, NULL, isjson);
+	io_open = io_add(io_data, isjson ? COMSTR JSON_GPUS : _GPUS COMSTR);
 
-	message(io_data, MSG_NUMPGA, 0, NULL, isjson);
-	io_open = io_add(io_data, isjson ? COMSTR JSON_PGAS : _PGAS COMSTR);
+	root = api_add_int(root, "Count", &numgpu, false);
 
-	root = api_add_int(root, "Count", &count, false);
-
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf, isjson, false);
+	io_add(io_data, buf);
 	if (isjson && io_open)
 		io_close(io_data);
 }
@@ -2656,7 +2087,7 @@ static void switchpool(struct io_data *io_data, __maybe_unused SOCKETTYPE c, cha
 	}
 
 	pool = pools[id];
-	pool->enabled = POOL_ENABLED;
+	pool->state = POOL_ENABLED;
 	cg_runlock(&control_lock);
 	switch_pools(pool);
 
@@ -2684,7 +2115,7 @@ static bool pooldetails(char *param, char **url, char **user, char **pass)
 {
 	char *ptr, *buf;
 
-	ptr = buf = malloc(strlen(param)+1);
+	ptr = buf = (char *)malloc(strlen(param) + 1);
 	if (unlikely(!buf))
 		quit(1, "Failed to malloc pooldetails buf");
 
@@ -2769,12 +2200,12 @@ static void enablepool(struct io_data *io_data, __maybe_unused SOCKETTYPE c, cha
 	}
 
 	pool = pools[id];
-	if (pool->enabled == POOL_ENABLED) {
+	if (pool->state == POOL_ENABLED) {
 		message(io_data, MSG_ALRENAP, id, NULL, isjson);
 		return;
 	}
 
-	pool->enabled = POOL_ENABLED;
+	pool->state = POOL_ENABLED;
 	if (pool->prio < current_pool()->prio)
 		switch_pools(pool);
 
@@ -2786,7 +2217,7 @@ static void poolpriority(struct io_data *io_data, __maybe_unused SOCKETTYPE c, c
 	char *ptr, *next;
 	int i, pr, prio = 0;
 
-	// TODO: all cgminer code needs a mutex added everywhere for change
+	// TODO: all ogminer code needs a mutex added everywhere for change
 	//	access to total_pools and also parts of the pools[] array,
 	//	just copying total_pools here wont solve that
 
@@ -2800,8 +2231,9 @@ static void poolpriority(struct io_data *io_data, __maybe_unused SOCKETTYPE c, c
 		return;
 	}
 
-	bool pools_changed[total_pools];
-	int new_prio[total_pools];
+	bool* pools_changed = (bool*)alloca(total_pools*sizeof(bool));
+	int* new_prio = (int*)alloca(total_pools*sizeof(int));
+
 	for (i = 0; i < total_pools; ++i)
 		pools_changed[i] = false;
 
@@ -2913,17 +2345,12 @@ static void disablepool(struct io_data *io_data, __maybe_unused SOCKETTYPE c, ch
 	}
 
 	pool = pools[id];
-	if (pool->enabled == POOL_DISABLED) {
+	if (pool->state == POOL_DISABLED) {
 		message(io_data, MSG_ALRDISP, id, NULL, isjson);
 		return;
 	}
 
-	if (enabled_pools <= 1) {
-		message(io_data, MSG_DISLASTP, id, NULL, isjson);
-		return;
-	}
-
-	pool->enabled = POOL_DISABLED;
+	pool->state = POOL_DISABLED;
 	if (pool == current_pool())
 		switch_pools(NULL);
 
@@ -2967,7 +2394,7 @@ static void removepool(struct io_data *io_data, __maybe_unused SOCKETTYPE c, cha
 		return;
 	}
 
-	pool->enabled = POOL_DISABLED;
+	pool->state = POOL_DISABLED;
 	rpc_url = escape_string(pool->rpc_url, isjson);
 	if (rpc_url != pool->rpc_url)
 		dofree = true;
@@ -2979,6 +2406,154 @@ static void removepool(struct io_data *io_data, __maybe_unused SOCKETTYPE c, cha
 	if (dofree)
 		free(rpc_url);
 	rpc_url = NULL;
+}
+
+static bool splitgpuvalue(struct io_data *io_data, char *param, int *gpu, char **value, bool isjson)
+{
+	int id;
+	char *gpusep;
+
+	if (nDevs == 0) {
+		message(io_data, MSG_GPUNON, 0, NULL, isjson);
+		return false;
+	}
+
+	if (param == NULL || *param == '\0') {
+		message(io_data, MSG_MISID, 0, NULL, isjson);
+		return false;
+	}
+
+	gpusep = strchr(param, GPUSEP);
+	if (gpusep == NULL) {
+		message(io_data, MSG_MISVAL, 0, NULL, isjson);
+		return false;
+	}
+
+	*(gpusep++) = '\0';
+
+	id = atoi(param);
+	if (id < 0 || id >= nDevs) {
+		message(io_data, MSG_INVGPU, id, NULL, isjson);
+		return false;
+	}
+
+	*gpu = id;
+	*value = gpusep;
+
+	return true;
+}
+
+static void gpuintensity(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
+{
+	int id;
+	char *value;
+	int intensity;
+	char intensitystr[7];
+
+	if (!splitgpuvalue(io_data, param, &id, &value, isjson))
+		return;
+
+	if (!strncasecmp(value, DYNAMIC, 1)) {
+		gpus[id].dynamic = true;
+		strcpy(intensitystr, DYNAMIC);
+	}
+	else {
+		intensity = atoi(value);
+		if (intensity < MIN_INTENSITY || intensity > MAX_INTENSITY) {
+			message(io_data, MSG_INVINT, 0, value, isjson);
+			return;
+		}
+
+		gpus[id].dynamic = false;
+		gpus[id].intensity = intensity;
+		sprintf(intensitystr, "%d", intensity);
+	}
+
+	message(io_data, MSG_GPUINT, id, intensitystr, isjson);
+}
+
+static void gpumem(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
+{
+#ifdef HAVE_ADL
+	int id;
+	char *value;
+	int clock;
+
+	if (!splitgpuvalue(io_data, param, &id, &value, isjson))
+		return;
+
+	clock = atoi(value);
+
+	if (set_memoryclock(id, clock))
+		message(io_data, MSG_GPUMERR, id, value, isjson);
+	else
+		message(io_data, MSG_GPUMEM, id, value, isjson);
+#else
+	message(io_data, MSG_NOADL, 0, NULL, isjson);
+#endif
+}
+
+static void gpuengine(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
+{
+#ifdef HAVE_ADL
+	int id;
+	char *value;
+	int clock;
+
+	if (!splitgpuvalue(io_data, param, &id, &value, isjson))
+		return;
+
+	clock = atoi(value);
+
+	if (set_engineclock(id, clock))
+		message(io_data, MSG_GPUEERR, id, value, isjson);
+	else
+		message(io_data, MSG_GPUENG, id, value, isjson);
+#else
+	message(io_data, MSG_NOADL, 0, NULL, isjson);
+#endif
+}
+
+static void gpufan(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
+{
+#ifdef HAVE_ADL
+	int id;
+	char *value;
+	int fan;
+
+	if (!splitgpuvalue(io_data, param, &id, &value, isjson))
+		return;
+
+	fan = atoi(value);
+
+	if (set_fanspeed(id, fan))
+		message(io_data, MSG_GPUFERR, id, value, isjson);
+	else
+		message(io_data, MSG_GPUFAN, id, value, isjson);
+#else
+	message(io_data, MSG_NOADL, 0, NULL, isjson);
+#endif
+}
+
+static void gpuvddc(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
+{
+#ifdef HAVE_ADL
+	int id;
+	char *value;
+	float vddc;
+
+	if (!splitgpuvalue(io_data, param, &id, &value, isjson))
+		return;
+
+	vddc = atof(value);
+
+	if (set_vddc(id, vddc))
+		message(io_data, MSG_GPUVERR, id, value, isjson);
+	else
+		message(io_data, MSG_GPUVDDC, id, value, isjson);
+#else
+	message(io_data, MSG_NOADL, 0, NULL, isjson);
+#endif
 }
 
 void doquit(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
@@ -3011,6 +2586,7 @@ void privileged(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_un
 void notifystatus(struct io_data *io_data, int device, struct cgpu_info *cgpu, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	char *reason;
 
 	if (cgpu->device_last_not_well == 0)
@@ -3068,7 +2644,8 @@ void notifystatus(struct io_data *io_data, int device, struct cgpu_info *cgpu, b
 	root = api_add_int(root, "*Dev Comms Error", &(cgpu->dev_comms_error_count), false);
 	root = api_add_int(root, "*Dev Throttle", &(cgpu->dev_throttle_count), false);
 
-	root = print_data(io_data, root, isjson, isjson && (device > 0));
+	root = print_data(root, buf, isjson, isjson && (device > 0));
+	io_add(io_data, buf);
 }
 
 static void notify(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, char group)
@@ -3099,6 +2676,7 @@ static void notify(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe
 static void devdetails(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open = false;
 	struct cgpu_info *cgpu;
 	int i;
@@ -3120,11 +2698,12 @@ static void devdetails(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 		root = api_add_string(root, "Name", cgpu->drv->name, false);
 		root = api_add_int(root, "ID", &(cgpu->device_id), false);
 		root = api_add_string(root, "Driver", cgpu->drv->dname, false);
-		root = api_add_const(root, "Kernel", cgpu->kname ? : BLANK, false);
-		root = api_add_const(root, "Model", cgpu->name ? : BLANK, false);
-		root = api_add_const(root, "Device Path", cgpu->device_path ? : BLANK, false);
+		root = api_add_const(root, "Kernel", cgpu->kernelname ? cgpu->kernelname : BLANK, false);
+		root = api_add_const(root, "Model", cgpu->name ? cgpu->name : BLANK, false);
+		root = api_add_const(root, "Device Path", cgpu->device_path ? cgpu->device_path : BLANK, false);
 
-		root = print_data(io_data, root, isjson, isjson && (i > 0));
+		root = print_data(root, buf, isjson, isjson && (i > 0));
+		io_add(io_data, buf);
 	}
 
 	if (isjson && io_open)
@@ -3162,9 +2741,10 @@ void dosave(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, b
 	ptr = NULL;
 }
 
-static int itemstats(struct io_data *io_data, int i, char *id, struct cgminer_stats *stats, struct cgminer_pool_stats *pool_stats, struct api_data *extra, struct cgpu_info *cgpu, bool isjson)
+static int itemstats(struct io_data *io_data, int i, char *id, struct ogminer_stats *stats, struct ogminer_pool_stats *pool_stats, struct api_data *extra, struct cgpu_info *cgpu, bool isjson)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 
 	root = api_add_int(root, "STATS", &i, false);
 	root = api_add_string(root, "ID", id, false);
@@ -3201,65 +2781,8 @@ static int itemstats(struct io_data *io_data, int i, char *id, struct cgminer_st
 	if (extra)
 		root = api_add_extra(root, extra);
 
-	if (cgpu) {
-#ifdef USE_USBUTILS
-		char details[256];
-
-		if (cgpu->usbinfo.pipe_count)
-			snprintf(details, sizeof(details),
-				 "%"PRIu64" %"PRIu64"/%"PRIu64"/%"PRIu64" %lu",
-				 cgpu->usbinfo.pipe_count,
-				 cgpu->usbinfo.clear_err_count,
-				 cgpu->usbinfo.retry_err_count,
-				 cgpu->usbinfo.clear_fail_count,
-				 (unsigned long)(cgpu->usbinfo.last_pipe));
-		else
-			strcpy(details, "0");
-
-		root = api_add_string(root, "USB Pipe", details, true);
-
-		snprintf(details, sizeof(details),
-			 "r%"PRIu64" %.6f w%"PRIu64" %.6f",
-			 cgpu->usbinfo.read_delay_count,
-			 cgpu->usbinfo.total_read_delay,
-			 cgpu->usbinfo.write_delay_count,
-			 cgpu->usbinfo.total_write_delay);
-
-		root = api_add_string(root, "USB Delay", details, true);
-
-		if (cgpu->usbinfo.usb_tmo[0].count == 0 &&
-			cgpu->usbinfo.usb_tmo[1].count == 0 &&
-			cgpu->usbinfo.usb_tmo[2].count == 0) {
-				snprintf(details, sizeof(details),
-					 "%"PRIu64" 0", cgpu->usbinfo.tmo_count);
-		} else {
-			snprintf(details, sizeof(details),
-				 "%"PRIu64" %d=%d/%d/%d/%"PRIu64"/%"PRIu64
-				 " %d=%d/%d/%d/%"PRIu64"/%"PRIu64
-				 " %d=%d/%d/%d/%"PRIu64"/%"PRIu64" ",
-				 cgpu->usbinfo.tmo_count,
-				 USB_TMO_0, cgpu->usbinfo.usb_tmo[0].count,
-				 cgpu->usbinfo.usb_tmo[0].min_tmo,
-				 cgpu->usbinfo.usb_tmo[0].max_tmo,
-				 cgpu->usbinfo.usb_tmo[0].total_over,
-				 cgpu->usbinfo.usb_tmo[0].total_tmo,
-				 USB_TMO_1, cgpu->usbinfo.usb_tmo[1].count,
-				 cgpu->usbinfo.usb_tmo[1].min_tmo,
-				 cgpu->usbinfo.usb_tmo[1].max_tmo,
-				 cgpu->usbinfo.usb_tmo[1].total_over,
-				 cgpu->usbinfo.usb_tmo[1].total_tmo,
-				 USB_TMO_2, cgpu->usbinfo.usb_tmo[2].count,
-				 cgpu->usbinfo.usb_tmo[2].min_tmo,
-				 cgpu->usbinfo.usb_tmo[2].max_tmo,
-				 cgpu->usbinfo.usb_tmo[2].total_over,
-				 cgpu->usbinfo.usb_tmo[2].total_tmo);
-		}
-
-		root = api_add_string(root, "USB tmo", details, true);
-#endif
-	}
-
-	root = print_data(io_data, root, isjson, isjson && (i > 0));
+	root = print_data(root, buf, isjson, isjson && (i > 0));
+	io_add(io_data, buf);
 
 	return ++i;
 }
@@ -3288,7 +2811,7 @@ static void minerstats(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 				extra = NULL;
 
 			sprintf(id, "%s%d", cgpu->drv->name, cgpu->device_id);
-			i = itemstats(io_data, i, id, &(cgpu->cgminer_stats), NULL, extra, cgpu, isjson);
+			i = itemstats(io_data, i, id, &(cgpu->ogminer_stats), NULL, extra, cgpu, isjson);
 		}
 	}
 
@@ -3296,53 +2819,7 @@ static void minerstats(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 		struct pool *pool = pools[j];
 
 		sprintf(id, "POOL%d", j);
-		i = itemstats(io_data, i, id, &(pool->cgminer_stats), &(pool->cgminer_pool_stats), NULL, NULL, isjson);
-	}
-
-	if (isjson && io_open)
-		io_close(io_data);
-}
-
-static void minerestats(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	bool io_open = false;
-	struct api_data *extra;
-	char id[20];
-	int i, j;
-	time_t howoldsec = 0;
-
-	if (param && *param)
-		howoldsec = (time_t)atoi(param);
-
-	message(io_data, MSG_MINESTATS, 0, NULL, isjson);
-	if (isjson)
-		io_open = io_add(io_data, COMSTR JSON_MINESTATS);
-
-	i = 0;
-	for (j = 0; j < total_devices; j++) {
-		cgpu = get_devices(j);
-		if (!cgpu)
-			continue;
-#ifdef USE_USBUTILS
-		if (cgpu->blacklisted)
-			continue;
-		if (cgpu->usbinfo.nodev) {
-			if (howoldsec <= 0)
-				continue;
-			if ((when - cgpu->usbinfo.last_nodev.tv_sec) >= howoldsec)
-				continue;
-		}
-#endif
-		if (cgpu->drv) {
-			if (cgpu->drv->get_api_stats)
-				extra = cgpu->drv->get_api_stats(cgpu);
-			else
-				extra = NULL;
-
-			sprintf(id, "%s%d", cgpu->drv->name, cgpu->device_id);
-			i = itemstats(io_data, i, id, &(cgpu->cgminer_stats), NULL, extra, cgpu, isjson);
-		}
+		i = itemstats(io_data, i, id, &(pool->ogminer_stats), &(pool->ogminer_pool_stats), NULL, NULL, isjson);
 	}
 
 	if (isjson && io_open)
@@ -3373,12 +2850,13 @@ static void failoveronly(struct io_data *io_data, __maybe_unused SOCKETTYPE c, c
 static void minecoin(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open;
 
 	message(io_data, MSG_MINECOIN, 0, NULL, isjson);
 	io_open = io_add(io_data, isjson ? COMSTR JSON_MINECOIN : _MINECOIN COMSTR);
 
-	root = api_add_const(root, "Hash Method", SHA256STR, false);
+	root = api_add_string(root, "Hash Method", algorithm->name, false);
 
 	cg_rlock(&ch_lock);
 	root = api_add_timeval(root, "Current Block Time", &block_timeval, true);
@@ -3388,7 +2866,8 @@ static void minecoin(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __may
 	root = api_add_bool(root, "LP", &have_longpoll, false);
 	root = api_add_diff(root, "Network Difficulty", &current_diff, true);
 
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf, isjson, false);
+	io_add(io_data, buf);
 	if (isjson && io_open)
 		io_close(io_data);
 }
@@ -3396,6 +2875,7 @@ static void minecoin(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __may
 static void debugstate(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open;
 
 	if (param == NULL)
@@ -3465,7 +2945,8 @@ static void debugstate(struct io_data *io_data, __maybe_unused SOCKETTYPE c, cha
 	root = api_add_bool(root, "PerDevice", &want_per_device_stats, false);
 	root = api_add_bool(root, "WorkTime", &opt_worktime, false);
 
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf, isjson, false);
+	io_add(io_data, buf);
 	if (isjson && io_open)
 		io_close(io_data);
 }
@@ -3506,103 +2987,6 @@ static void setconfig(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char
 
 	message(io_data, MSG_SETCONFIG, value, param, isjson);
 }
-
-static void usbstats(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
-{
-	struct api_data *root = NULL;
-
-#ifdef USE_USBUTILS
-	bool io_open = false;
-	int count = 0;
-
-	root = api_usb_stats(&count);
-#endif
-
-	if (!root) {
-		message(io_data, MSG_NOUSTA, 0, NULL, isjson);
-		return;
-	}
-
-#ifdef USE_USBUTILS
-	message(io_data, MSG_USBSTA, 0, NULL, isjson);
-
-	if (isjson)
-		io_open = io_add(io_data, COMSTR JSON_USBSTATS);
-
-	root = print_data(io_data, root, isjson, false);
-
-	while (42) {
-		root = api_usb_stats(&count);
-		if (!root)
-			break;
-
-		root = print_data(io_data, root, isjson, isjson);
-	}
-
-	if (isjson && io_open)
-		io_close(io_data);
-#endif
-}
-
-#ifdef HAVE_AN_FPGA
-static void pgaset(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	struct device_drv *drv;
-	char buf[TMPBUFSIZ];
-	int numpga = numpgas();
-
-	if (numpga == 0) {
-		message(io_data, MSG_PGANON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	char *opt = strchr(param, ',');
-	if (opt)
-		*(opt++) = '\0';
-	if (!opt || !*opt) {
-		message(io_data, MSG_MISPGAOPT, 0, NULL, isjson);
-		return;
-	}
-
-	int id = atoi(param);
-	if (id < 0 || id >= numpga) {
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	int dev = pgadevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVPGA, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-	drv = cgpu->drv;
-
-	char *set = strchr(opt, ',');
-	if (set)
-		*(set++) = '\0';
-
-	if (!drv->set_device)
-		message(io_data, MSG_PGANOSET, id, NULL, isjson);
-	else {
-		char *ret = drv->set_device(cgpu, opt, set, buf);
-		if (ret) {
-			if (strcasecmp(opt, "help") == 0)
-				message(io_data, MSG_PGAHELP, id, ret, isjson);
-			else
-				message(io_data, MSG_PGASETERR, id, ret, isjson);
-		} else
-			message(io_data, MSG_PGASETOK, id, NULL, isjson);
-	}
-}
-#endif
 
 static void dozero(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
 {
@@ -3652,300 +3036,6 @@ static void dozero(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *p
 		message(io_data, MSG_ZERNOSUM, 0, all ? "All" : "BestShare", isjson);
 }
 
-static void dohotplug(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
-{
-#ifdef USE_USBUTILS
-	int value;
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISHPLG, 0, NULL, isjson);
-		return;
-	}
-
-	value = atoi(param);
-	if (value < 0 || value > 9999) {
-		message(io_data, MSG_INVHPLG, 0, param, isjson);
-		return;
-	}
-
-	hotplug_time = value;
-
-	if (value)
-		message(io_data, MSG_HOTPLUG, value, NULL, isjson);
-	else
-		message(io_data, MSG_DISHPLG, 0, NULL, isjson);
-#else
-	message(io_data, MSG_NOHPLG, 0, NULL, isjson);
-	return;
-#endif
-}
-
-#ifdef HAVE_AN_ASIC
-static void ascdev(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	bool io_open = false;
-	int numasc = numascs();
-	int id;
-
-	if (numasc == 0) {
-		message(io_data, MSG_ASCNON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numasc) {
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	message(io_data, MSG_ASCDEV, id, NULL, isjson);
-
-	if (isjson)
-		io_open = io_add(io_data, COMSTR JSON_ASC);
-
-	ascstatus(io_data, id, isjson, false);
-
-	if (isjson && io_open)
-		io_close(io_data);
-}
-
-static void ascenable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	int numasc = numascs();
-	struct thr_info *thr;
-	int asc;
-	int id;
-	int i;
-
-	if (numasc == 0) {
-		message(io_data, MSG_ASCNON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numasc) {
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	int dev = ascdevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-
-	applog(LOG_DEBUG, "API: request to ascenable ascid %d device %d %s%u",
-			id, dev, cgpu->drv->name, cgpu->device_id);
-
-	if (cgpu->deven != DEV_DISABLED) {
-		message(io_data, MSG_ASCLRENA, id, NULL, isjson);
-		return;
-	}
-
-#if 0 /* A DISABLED device wont change status FIXME: should disabling make it WELL? */
-	if (cgpu->status != LIFE_WELL) {
-		message(io_data, MSG_ASCUNW, id, NULL, isjson);
-		return;
-	}
-#endif
-
-#ifdef USE_USBUTILS
-	if (cgpu->usbinfo.nodev) {
-		message(io_data, MSG_ASCUSBNODEV, id, NULL, isjson);
-		return;
-	}
-#endif
-
-	for (i = 0; i < mining_threads; i++) {
-		thr = get_thread(i);
-		asc = thr->cgpu->cgminer_id;
-		if (asc == dev) {
-			cgpu->deven = DEV_ENABLED;
-			applog(LOG_DEBUG, "API: Pushing sem post to thread %d", thr->id);
-			cgsem_post(&thr->sem);
-		}
-	}
-
-	message(io_data, MSG_ASCENA, id, NULL, isjson);
-}
-
-static void ascdisable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	int numasc = numascs();
-	int id;
-
-	if (numasc == 0) {
-		message(io_data, MSG_ASCNON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numasc) {
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	int dev = ascdevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-
-	applog(LOG_DEBUG, "API: request to ascdisable ascid %d device %d %s%u",
-			id, dev, cgpu->drv->name, cgpu->device_id);
-
-	if (cgpu->deven == DEV_DISABLED) {
-		message(io_data, MSG_ASCLRDIS, id, NULL, isjson);
-		return;
-	}
-
-	cgpu->deven = DEV_DISABLED;
-
-	message(io_data, MSG_ASCDIS, id, NULL, isjson);
-}
-
-static void ascidentify(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	struct device_drv *drv;
-	int numasc = numascs();
-	int id;
-
-	if (numasc == 0) {
-		message(io_data, MSG_ASCNON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	id = atoi(param);
-	if (id < 0 || id >= numasc) {
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	int dev = ascdevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-	drv = cgpu->drv;
-
-	if (!drv->identify_device)
-		message(io_data, MSG_ASCNOID, id, NULL, isjson);
-	else {
-		drv->identify_device(cgpu);
-		message(io_data, MSG_ASCIDENT, id, NULL, isjson);
-	}
-}
-#endif
-
-static void asccount(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
-{
-	struct api_data *root = NULL;
-	bool io_open;
-	int count = 0;
-
-#ifdef HAVE_AN_ASIC
-	count = numascs();
-#endif
-
-	message(io_data, MSG_NUMASC, 0, NULL, isjson);
-	io_open = io_add(io_data, isjson ? COMSTR JSON_ASCS : _ASCS COMSTR);
-
-	root = api_add_int(root, "Count", &count, false);
-
-	root = print_data(io_data, root, isjson, false);
-	if (isjson && io_open)
-		io_close(io_data);
-}
-
-#ifdef HAVE_AN_ASIC
-static void ascset(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
-{
-	struct cgpu_info *cgpu;
-	struct device_drv *drv;
-	char buf[TMPBUFSIZ];
-	int numasc = numascs();
-
-	if (numasc == 0) {
-		message(io_data, MSG_ASCNON, 0, NULL, isjson);
-		return;
-	}
-
-	if (param == NULL || *param == '\0') {
-		message(io_data, MSG_MISID, 0, NULL, isjson);
-		return;
-	}
-
-	char *opt = strchr(param, ',');
-	if (opt)
-		*(opt++) = '\0';
-	if (!opt || !*opt) {
-		message(io_data, MSG_MISASCOPT, 0, NULL, isjson);
-		return;
-	}
-
-	int id = atoi(param);
-	if (id < 0 || id >= numasc) {
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	int dev = ascdevice(id);
-	if (dev < 0) { // Should never happen
-		message(io_data, MSG_INVASC, id, NULL, isjson);
-		return;
-	}
-
-	cgpu = get_devices(dev);
-	drv = cgpu->drv;
-
-	char *set = strchr(opt, ',');
-	if (set)
-		*(set++) = '\0';
-
-	if (!drv->set_device)
-		message(io_data, MSG_ASCNOSET, id, NULL, isjson);
-	else {
-		char *ret = drv->set_device(cgpu, opt, set, buf);
-		if (ret) {
-			if (strcasecmp(opt, "help") == 0)
-				message(io_data, MSG_ASCHELP, id, ret, isjson);
-			else
-				message(io_data, MSG_ASCSETERR, id, ret, isjson);
-		} else
-			message(io_data, MSG_ASCSETOK, id, NULL, isjson);
-	}
-}
-#endif
-
 static void checkcommand(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, char group);
 
 struct CMDS {
@@ -3957,16 +3047,13 @@ struct CMDS {
 	{ "version",		apiversion,	false,	true },
 	{ "config",		minerconfig,	false,	true },
 	{ "devs",		devstatus,	false,	true },
-	{ "edevs",		edevstatus,	false,	true },
 	{ "pools",		poolstatus,	false,	true },
 	{ "summary",		summary,	false,	true },
-#ifdef HAVE_AN_FPGA
-	{ "pga",		pgadev,		false,	false },
-	{ "pgaenable",		pgaenable,	true,	false },
-	{ "pgadisable",		pgadisable,	true,	false },
-	{ "pgaidentify",	pgaidentify,	true,	false },
-#endif
-	{ "pgacount",		pgacount,	false,	true },
+	{ "gpuenable",          gpuenable,      true,	false },
+	{ "gpudisable",         gpudisable,     true,	false },
+	{ "gpurestart",         gpurestart,     true,	false },
+	{ "gpu",                gpudev,         false,	false },
+	{ "gpucount",           gpucount,       false,	true },
 	{ "switchpool",		switchpool,	true,	false },
 	{ "addpool",		addpool,	true,	false },
 	{ "poolpriority",	poolpriority,	true,	false },
@@ -3974,6 +3061,11 @@ struct CMDS {
 	{ "enablepool",		enablepool,	true,	false },
 	{ "disablepool",	disablepool,	true,	false },
 	{ "removepool",		removepool,	true,	false },
+	{ "gpuintensity",       gpuintensity,   true,	false },
+	{ "gpumem",             gpumem,         true,	false },
+	{ "gpuengine",          gpuengine,      true,	false },
+	{ "gpufan",             gpufan,         true,	false },
+	{ "gpuvddc",            gpuvddc,        true,	false },
 	{ "save",		dosave,		true,	false },
 	{ "quit",		doquit,		true,	false },
 	{ "privileged",		privileged,	true,	false },
@@ -3981,26 +3073,12 @@ struct CMDS {
 	{ "devdetails",		devdetails,	false,	true },
 	{ "restart",		dorestart,	true,	false },
 	{ "stats",		minerstats,	false,	true },
-	{ "estats",		minerestats,	false,	true },
 	{ "check",		checkcommand,	false,	false },
 	{ "failover-only",	failoveronly,	true,	false },
 	{ "coin",		minecoin,	false,	true },
 	{ "debug",		debugstate,	true,	false },
 	{ "setconfig",		setconfig,	true,	false },
-	{ "usbstats",		usbstats,	false,	true },
-#ifdef HAVE_AN_FPGA
-	{ "pgaset",		pgaset,		true,	false },
-#endif
 	{ "zero",		dozero,		true,	false },
-	{ "hotplug",		dohotplug,	true,	false },
-#ifdef HAVE_AN_ASIC
-	{ "asc",		ascdev,		false,	false },
-	{ "ascenable",		ascenable,	true,	false },
-	{ "ascdisable",		ascdisable,	true,	false },
-	{ "ascidentify",	ascidentify,	true,	false },
-	{ "ascset",		ascset,		true,	false },
-#endif
-	{ "asccount",		asccount,	false,	true },
 	{ "lockstats",		lockstats,	true,	true },
 	{ NULL,			NULL,		false,	false }
 };
@@ -4008,6 +3086,7 @@ struct CMDS {
 static void checkcommand(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, char group)
 {
 	struct api_data *root = NULL;
+	char buf[TMPBUFSIZ];
 	bool io_open;
 	char cmdbuf[100];
 	bool found, access;
@@ -4038,7 +3117,8 @@ static void checkcommand(struct io_data *io_data, __maybe_unused SOCKETTYPE c, c
 	root = api_add_const(root, "Exists", found ? YES : NO, false);
 	root = api_add_const(root, "Access", access ? YES : NO, false);
 
-	root = print_data(io_data, root, isjson, false);
+	root = print_data(root, buf, isjson, false);
+	io_add(io_data, buf);
 	if (isjson && io_open)
 		io_close(io_data);
 }
@@ -4188,7 +3268,7 @@ static void setup_groups()
 	bool addstar, did;
 	int i;
 
-	buf = malloc(strlen(api_groups) + 1);
+	buf = (char *)malloc(strlen(api_groups) + 1);
 	if (unlikely(!buf))
 		quit(1, "Failed to malloc ipgroups buf");
 
@@ -4278,7 +3358,7 @@ static void setup_groups()
 			}
 		}
 
-		ptr = apigroups[GROUPOFFSET(group)].commands = malloc(strlen(commands) + 1);
+		ptr = apigroups[GROUPOFFSET(group)].commands = (char *)malloc(strlen(commands) + 1);
 		if (unlikely(!ptr))
 			quit(1, "Failed to malloc group commands buf");
 
@@ -4298,7 +3378,7 @@ static void setup_groups()
 		}
 	}
 
-	ptr = apigroups[GROUPOFFSET(NOPRIVGROUP)].commands = malloc(strlen(commands) + 1);
+	ptr = apigroups[GROUPOFFSET(NOPRIVGROUP)].commands = (char *)malloc(strlen(commands) + 1);
 	if (unlikely(!ptr))
 		quit(1, "Failed to malloc noprivgroup commands buf");
 
@@ -4324,7 +3404,7 @@ static void setup_ipaccess()
 	int ipcount, mask, octet, i;
 	char group;
 
-	buf = malloc(strlen(opt_api_allow) + 1);
+	buf = (char *)malloc(strlen(opt_api_allow) + 1);
 	if (unlikely(!buf))
 		quit(1, "Failed to malloc ipaccess buf");
 
@@ -4337,7 +3417,7 @@ static void setup_ipaccess()
 			ipcount++;
 
 	// possibly more than needed, but never less
-	ipaccess = calloc(ipcount, sizeof(struct IP4ACCESS));
+	ipaccess = (struct IP4ACCESS *)calloc(ipcount, sizeof(struct IP4ACCESS));
 	if (unlikely(!ipaccess))
 		quit(1, "Failed to calloc ipaccess");
 
@@ -4419,7 +3499,7 @@ static void *quit_thread(__maybe_unused void *userdata)
 	mutex_unlock(&quit_restart_lock);
 
 	if (opt_debug)
-		applog(LOG_DEBUG, "API: killing cgminer");
+		applog(LOG_DEBUG, "API: killing ogminer");
 
 	kill_work();
 
@@ -4433,7 +3513,7 @@ static void *restart_thread(__maybe_unused void *userdata)
 	mutex_unlock(&quit_restart_lock);
 
 	if (opt_debug)
-		applog(LOG_DEBUG, "API: restarting cgminer");
+		applog(LOG_DEBUG, "API: restarting ogminer");
 
 	app_restart();
 
@@ -4485,7 +3565,7 @@ static void mcast()
 	bool addrok;
 	char group;
 
-	char expect[] = "cgminer-"; // first 8 bytes constant
+	char expect[] = "ogminer-"; // first 8 bytes constant
 	char *expect_code;
 	size_t expect_code_len;
 	char buf[1024];
@@ -4500,7 +3580,7 @@ static void mcast()
 	mcast_sock = socket(AF_INET, SOCK_DGRAM, 0);
 
 	int optval = 1;
-	if (SOCKETFAIL(setsockopt(mcast_sock, SOL_SOCKET, SO_REUSEADDR, (void *)(&optval), sizeof(optval)))) {
+	if (SOCKETFAIL(setsockopt(mcast_sock, SOL_SOCKET, SO_REUSEADDR, (const char *)(&optval), sizeof(optval)))) {
 		applog(LOG_ERR, "API mcast setsockopt SO_REUSEADDR failed (%s)%s", SOCKERRMSG, MUNAVAILABLE);
 		goto die;
 	}
@@ -4529,13 +3609,13 @@ static void mcast()
 		goto die;
 	}
 
-	if (SOCKETFAIL(setsockopt(mcast_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (void *)(&grp), sizeof(grp)))) {
+	if (SOCKETFAIL(setsockopt(mcast_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char *)(&grp), sizeof(grp)))) {
 		applog(LOG_ERR, "API mcast join failed (%s)%s", SOCKERRMSG, MUNAVAILABLE);
 		goto die;
 	}
 
 	expect_code_len = sizeof(expect) + strlen(opt_api_mcast_code);
-	expect_code = malloc(expect_code_len+1);
+	expect_code = (char *)malloc(expect_code_len + 1);
 	if (!expect_code)
 		quit(1, "Failed to malloc mcast expect_code");
 	snprintf(expect_code, expect_code_len+1, "%s%s-", expect, opt_api_mcast_code);
@@ -4608,7 +3688,7 @@ die:
 
 static void *mcast_thread(void *userdata)
 {
-	struct thr_info *mythr = userdata;
+	struct thr_info *mythr = (struct thr_info *)userdata;
 
 	pthread_detach(pthread_self());
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
@@ -4626,7 +3706,7 @@ void mcast_init()
 {
 	struct thr_info *thr;
 
-	thr = calloc(1, sizeof(*thr));
+	thr = (struct thr_info *)calloc(1, sizeof(*thr));
 	if (!thr)
 		quit(1, "Failed to calloc mcast thr");
 
@@ -4650,7 +3730,7 @@ void api(int api_thr_id)
 	struct sockaddr_in cli;
 	socklen_t clisiz;
 	char cmdbuf[100];
-	char *cmd = NULL;
+	char *cmd = NULL, *cmdptr, *cmdsbuf;
 	char *param;
 	bool addrok;
 	char group;
@@ -4658,12 +3738,12 @@ void api(int api_thr_id)
 	json_t *json_config = NULL;
 	json_t *json_val;
 	bool isjson;
-	bool did, isjoin = false, firstjoin;
+	bool did, isjoin, firstjoin;
 	int i;
 
 	SOCKETTYPE *apisock;
 
-	apisock = malloc(sizeof(*apisock));
+	apisock = (SOCKETTYPE *)malloc(sizeof(*apisock));
 	*apisock = INVSOCK;
 
 	if (!opt_api_listen) {
@@ -4772,8 +3852,6 @@ void api(int api_thr_id)
 	if (opt_api_mcast)
 		mcast_init();
 
-	strbufs = k_new_list("StrBufs", sizeof(SBITEM), ALLOC_SBITEMS, LIMIT_SBITEMS, false);
-
 	while (!bye) {
 		clisiz = sizeof(cli);
 		if (SOCKETFAIL(c = accept(*apisock, (struct sockaddr *)(&cli), &clisiz))) {
@@ -4861,12 +3939,10 @@ void api(int api_thr_id)
 				}
 
 				if (!did) {
-					char *cmdptr, *cmdsbuf = NULL;
-
 					if (strchr(cmd, CMDJOIN)) {
 						firstjoin = isjoin = true;
-						// cmd + leading+tailing '|' + '\0'
-						cmdsbuf = malloc(strlen(cmd) + 3);
+						// cmd + leading '|' + '\0'
+						cmdsbuf = (char *)malloc(strlen(cmd) + 2);
 						if (!cmdsbuf)
 							quithere(1, "OOM cmdsbuf");
 						strcpy(cmdsbuf, "|");

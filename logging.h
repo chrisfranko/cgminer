@@ -1,5 +1,5 @@
-#ifndef __LOGGING_H__
-#define __LOGGING_H__
+#ifndef LOGGING_H
+#define LOGGING_H
 
 #include "config.h"
 #include <stdbool.h>
@@ -26,32 +26,14 @@ extern bool want_per_device_stats;
 /* global log_level, messages with lower or equal prio are logged */
 extern int opt_log_level;
 
+extern int opt_log_show_date;
+
 #define LOGBUFSIZ 256
 
+void applog(int prio, const char* fmt, ...);
 extern void _applog(int prio, const char *str, bool force);
-extern void _simplelog(int prio, const char *str, bool force);
 
 #define IN_FMT_FFL " in %s %s():%d"
-
-#define applog(prio, fmt, ...) do { \
-	if (opt_debug || prio != LOG_DEBUG) { \
-		if (use_syslog || opt_log_output || prio <= opt_log_level) { \
-			char tmp42[LOGBUFSIZ]; \
-			snprintf(tmp42, sizeof(tmp42), fmt, ##__VA_ARGS__); \
-			_applog(prio, tmp42, false); \
-		} \
-	} \
-} while (0)
-
-#define simplelog(prio, fmt, ...) do { \
-	if (opt_debug || prio != LOG_DEBUG) { \
-		if (use_syslog || opt_log_output || prio <= opt_log_level) { \
-			char tmp42[LOGBUFSIZ]; \
-			snprintf(tmp42, sizeof(tmp42), fmt, ##__VA_ARGS__); \
-			_simplelog(prio, tmp42, false); \
-		} \
-	} \
-} while (0)
 
 #define applogsiz(prio, _SIZ, fmt, ...) do { \
 	if (opt_debug || prio != LOG_DEBUG) { \
@@ -80,15 +62,6 @@ extern void _simplelog(int prio, const char *str, bool force);
 		_applog(LOG_ERR, tmp42, true); \
 	} \
 	_quit(status); \
-} while (0)
-
-#define early_quit(status, fmt, ...) do { \
-	if (fmt) { \
-		char tmp42[LOGBUFSIZ]; \
-		snprintf(tmp42, sizeof(tmp42), fmt, ##__VA_ARGS__); \
-		_applog(LOG_ERR, tmp42, true); \
-	} \
-	__quit(status, false); \
 } while (0)
 
 #define quithere(status, fmt, ...) do { \
@@ -127,4 +100,4 @@ extern void _simplelog(int prio, const char *str, bool force);
 
 #endif
 
-#endif /* __LOGGING_H__ */
+#endif /* LOGGING_H */

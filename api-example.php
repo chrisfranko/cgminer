@@ -1,6 +1,6 @@
 <?php
 #
-# Sample Socket I/O to CGMiner API
+# Sample Socket I/O to ogminer API
 #
 function getsock($addr, $port)
 {

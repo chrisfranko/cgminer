@@ -1,5 +1,5 @@
-#ifndef __COMPAT_H__
-#define __COMPAT_H__
+#ifndef COMPAT_H
+#define COMPAT_H
 
 #ifdef WIN32
 #include "config.h"
@@ -47,6 +47,8 @@ static inline int nanosleep(const struct timespec *req, struct timespec *rem)
 }
 #endif
 
+#if defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR)
+// Reported unneded in https://github.com/veox/ogminer/issues/37 */
 static inline int sleep(unsigned int secs)
 {
 	struct timespec req, rem;
@@ -56,6 +58,7 @@ static inline int sleep(unsigned int secs)
 		return 0;
 	return rem.tv_sec + (rem.tv_nsec ? 1 : 0);
 }
+#endif
 
 enum {
 	PRIO_PROCESS		= 0,
@@ -85,4 +88,4 @@ typedef long suseconds_t;
 #define PTH(thr) ((thr)->pth)
 #endif /* WIN32 */
 
-#endif /* __COMPAT_H__ */
+#endif /* COMPAT_H */
